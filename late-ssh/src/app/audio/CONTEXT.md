@@ -3,8 +3,8 @@
 ## Metadata
 - Domain: late.sh audio — Icecast house radio, global YouTube queue, browser/CLI source arbitration, Icecast visualizer, now-playing poller
 - Primary audience: LLM agents working in `late-ssh/src/app/audio` and the touchpoints it owns in `late-cli` and `late-web/src/pages/connect`
-- Last updated: 2026-05-18 (booth modal now surfaces track durations: queue list has a right-aligned `m:ss` column between title and submitter, and the Now Playing row shows the same `m:ss` next to the title. Streams render `live`; unknown durations are blank. Two submit paths diverge in metadata: booth (`booth_submit_public_task` → `submit_url` → Data API) inserts rows with title/channel/`duration_ms`/`is_stream` already populated; staff `/audio` (`submit_trusted_url_task`) inserts NULL metadata and the browser backfills `duration_ms` on first play via `record_browser_duration`. See §4 Public API + §2 booth/ui.rs note.)
-- Previously: skip-vote eligibility narrowed to YouTube listeners only — paired browsers with `audio_source = Youtube`. CLI-only and Icecast-pinned browsers don't count toward numerator or denominator. Flipping away from YouTube drops your pending vote. `SessionRegistry` and `PairedClientRegistry` now track `user_id` + cached `audio_source` per entry. Sidebar title-bar tags now show live listener counts on both blocks ("youtube ── 5" / "icecast ── 12"), browsers-only, lowercase labels. See §4 constants + §6 + §12.
+- Last updated: 2026-05-18 (added §18 parked plan: OS audio loopback for CLI-side visualization. Premised on the embedded-webview CLI playback work — once the CLI does local audio output, tap PipeWire/WASAPI/ScreenCaptureKit, run FFT locally, produce real `VizFrame`s across YouTube + Icecast + anything. Browser Web Audio analyzer can retire when this lands. Cross-ref from §10. Sibling to §17 external-player plan but with no yt-dlp posture concerns.)
+- Previously: booth modal now surfaces track durations: queue list has a right-aligned `m:ss` column between title and submitter, and the Now Playing row shows the same `m:ss` next to the title. Streams render `live`; unknown durations are blank. Two submit paths diverge in metadata: booth (`booth_submit_public_task` → `submit_url` → Data API) inserts rows with title/channel/`duration_ms`/`is_stream` already populated; staff `/audio` (`submit_trusted_url_task`) inserts NULL metadata and the browser backfills `duration_ms` on first play via `record_browser_duration`. See §4 Public API + §2 booth/ui.rs note.
 - Status: Active
 - Parent context: `../../../../CONTEXT.md`
 
@@ -294,6 +294,8 @@ Data flow: browser Web Audio analyzer → `WsPayload::Viz` → `api.rs:293` conv
 
 **Icecast-only by browser constraint.** A YouTube iframe is cross-origin; the browser cannot tap its audio. When mode is YouTube, the browser stops sending `viz` frames, `has_viz` decays to false, and the sidebar reverts to the idle panel. Do not pretend YouTube has frequency analysis — if a future UI wants a "playing" indicator for YouTube, drive it procedurally and name it as such in code (e.g. `procedural_indicator_bands`, not `viz_bands`).
 
+**Future unlock: OS audio loopback.** Once the CLI hosts its own playback (embedded webview track), the cross-origin constraint disappears entirely — we capture local audio output at the OS layer (PipeWire / WASAPI / ScreenCaptureKit) and feed real `VizFrame`s through the existing pipeline for every source, including YouTube. See §18 for the parked plan. Until that lands, procedural bars are the only honest YouTube-mode indicator.
+
 ---
 
 ## 11. Now-Playing (`now_playing/svc.rs`)
@@ -490,7 +492,44 @@ Until then, YouTube playback goes through the browser iframe path (§4-§9).
 
 ---
 
-## 18. References
+## 18. Parked: OS audio loopback for CLI-side visualization
+
+**Status: parked, not on the active build path.** Premised on the embedded-webview CLI playback work — when the CLI hosts its own audio output (not just decoding Icecast), the iframe cross-origin constraint that blocks all real YouTube viz today simply goes away. Captured here so the design unlock doesn't get lost when that track is picked up.
+
+### Idea
+
+Tap the CLI's own audio output at the OS layer, run FFT locally, emit `VizFrame { bands[8], rms, track_pos_ms }` through the existing pipeline. Works uniformly for YouTube, Icecast, and anything else the user plays through `late`. The browser-side Web Audio analyzer (§10 data-flow) can retire — viz becomes CLI-owned across every source, and the pair-WS `viz` fan-in can be removed.
+
+### Per-platform capture
+
+- **Linux**: PipeWire stream linked to the CLI's output sink's monitor source. PulseAudio monitor source as fallback for non-PipeWire systems.
+- **Windows**: WASAPI loopback on the default render endpoint (`IAudioClient::Initialize` with `AUDCLNT_STREAMFLAGS_LOOPBACK`).
+- **macOS**: ScreenCaptureKit audio (14+) for the modern path; CoreAudio aggregate / virtual-device plugin for older OS versions. Triggers a system-audio permission prompt the first time.
+
+A single trait inside `late-cli/src/audio/` abstracts the platform-specific capture; one Linux backend can ship first and unblock the other two per-PR.
+
+### What it unlocks
+
+- Real reactive bars in YouTube mode — no procedural placeholder needed once embedded-CLI playback is the default surface.
+- Single viz pipeline regardless of source. `procedural_indicator_bands` (§10) stays meaningful only for the **browser-pair** YouTube path — i.e. for users who haven't moved to the embedded CLI yet.
+- Server no longer needs to fan out browser viz frames over the pair WS. Each CLI generates its own.
+
+### Open questions
+
+- **Per-process vs system-wide capture.** System-wide picks up whatever the user is playing outside `late`; per-process is more honest but requires extra plumbing (PipeWire per-app routing, CoreAudio AudioObject scoping). Reasonable starting point: per-process where the OS supports it, fall back to system-wide.
+- **macOS permission UX.** First-launch prompt has to be explained somewhere (onboarding banner, `late doctor`, etc.).
+- **Ordering vs procedural bars.** Procedural bars (§10) ship first and cover the current browser-pair surface; OS-loopback lands later and coexists. Both paths stay live until the browser-pair YouTube surface is retired (if ever).
+
+### Reactivation criteria
+
+- Embedded-webview CLI playback work is on the active roadmap or already shipped.
+- We're willing to take on platform-specific audio code (the LATE bar to clear is one Linux backend).
+
+Until then, browser-pair YouTube uses procedural bars (§10) and Icecast viz continues to flow through the browser Web Audio analyzer.
+
+---
+
+## 19. References
 
 - Root context: `../../../../CONTEXT.md` — §2.7 (audio infra), §4.1 (paired-client WS).
 - Pair WS handler: `late-ssh/src/api.rs` (look for `handle_socket`).
