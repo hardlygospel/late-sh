@@ -1104,7 +1104,7 @@ impl ChatState {
     }
 
     /// Build the flat visual navigation order.
-    /// Order matches the cozy rail exactly: favorites, core, mentions,
+    /// Order matches the cozy rail exactly: favorites, core/mentions/news/rss,
     /// channels, updates, DMs.
     pub(crate) fn visual_order(&self) -> Vec<RoomSlot> {
         visual_order_for_rooms(
@@ -3250,6 +3250,10 @@ pub(crate) fn visual_order_for_rooms(
         }
     }
     order.push(RoomSlot::Notifications);
+    order.push(RoomSlot::News);
+    if feeds_available {
+        order.push(RoomSlot::Feeds);
+    }
 
     // Channels: all non-DM rooms outside Core, public + private merged.
     for (room, _) in rooms {
@@ -3262,10 +3266,6 @@ pub(crate) fn visual_order_for_rooms(
         }
     }
 
-    order.push(RoomSlot::News);
-    if feeds_available {
-        order.push(RoomSlot::Feeds);
-    }
     order.push(RoomSlot::Showcase);
     order.push(RoomSlot::Work);
 
@@ -4333,17 +4333,18 @@ mod tests {
                 &usernames,
                 &HashMap::new(),
                 &HashMap::new(),
-                false,
+                true,
                 &[],
             ),
             vec![
                 RoomSlot::Room(general),
                 RoomSlot::Room(announcements),
                 RoomSlot::Notifications,
+                RoomSlot::News,
+                RoomSlot::Feeds,
                 RoomSlot::Room(public_zeta),
                 RoomSlot::Room(private_beta),
                 RoomSlot::Room(public_alpha),
-                RoomSlot::News,
                 RoomSlot::Showcase,
                 RoomSlot::Work,
                 RoomSlot::Room(dm_alice.id),

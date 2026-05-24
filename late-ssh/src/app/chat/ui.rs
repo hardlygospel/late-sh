@@ -1469,6 +1469,54 @@ fn build_room_list_rows(view: &ChatRoomListView<'_>, rooms_area: Rect) -> RoomLi
         );
     }
 
+    let notifications_line = {
+        let prefix = room_jump_prefix(
+            view.room_jump_active.then(|| jump_keys.next()).flatten(),
+            view.room_jump_active,
+            view.notifications_selected,
+        );
+        let style = if view.notifications_selected {
+            Style::default()
+                .fg(theme::AMBER())
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme::TEXT())
+        };
+        let label = if view.notifications_unread_count > 0 {
+            format!("{prefix}mentions ({})", view.notifications_unread_count)
+        } else {
+            format!("{prefix}mentions")
+        };
+        Line::from(Span::styled(label, style))
+    };
+    push_row(
+        notifications_line,
+        Some(RoomSlot::Notifications),
+        view.notifications_selected,
+    );
+
+    let news_line = {
+        let prefix = room_jump_prefix(
+            view.room_jump_active.then(|| jump_keys.next()).flatten(),
+            view.room_jump_active,
+            view.news_selected,
+        );
+        let style = if view.news_selected {
+            Style::default()
+                .fg(theme::AMBER())
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme::TEXT())
+        };
+        let label = if view.news_unread_count > 0 {
+            format!("{prefix}news ({})", view.news_unread_count)
+        } else {
+            format!("{prefix}news")
+        };
+        Line::from(Span::styled(label, style))
+    };
+    push_row(news_line, Some(RoomSlot::News), view.news_selected);
+
     if view.feeds_available {
         let feeds_line = {
             let prefix = room_jump_prefix(
@@ -1492,28 +1540,6 @@ fn build_room_list_rows(view: &ChatRoomListView<'_>, rooms_area: Rect) -> RoomLi
         };
         push_row(feeds_line, Some(RoomSlot::Feeds), view.feeds_selected);
     }
-
-    let news_line = {
-        let prefix = room_jump_prefix(
-            view.room_jump_active.then(|| jump_keys.next()).flatten(),
-            view.room_jump_active,
-            view.news_selected,
-        );
-        let style = if view.news_selected {
-            Style::default()
-                .fg(theme::AMBER())
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(theme::TEXT())
-        };
-        let label = if view.news_unread_count > 0 {
-            format!("{prefix}news ({})", view.news_unread_count)
-        } else {
-            format!("{prefix}news")
-        };
-        Line::from(Span::styled(label, style))
-    };
-    push_row(news_line, Some(RoomSlot::News), view.news_selected);
 
     let showcase_line = {
         let prefix = room_jump_prefix(
@@ -1562,32 +1588,6 @@ fn build_room_list_rows(view: &ChatRoomListView<'_>, rooms_area: Rect) -> RoomLi
         Line::from(Span::styled(label, style))
     };
     push_row(work_line, Some(RoomSlot::Work), view.work_selected);
-
-    let notifications_line = {
-        let prefix = room_jump_prefix(
-            view.room_jump_active.then(|| jump_keys.next()).flatten(),
-            view.room_jump_active,
-            view.notifications_selected,
-        );
-        let style = if view.notifications_selected {
-            Style::default()
-                .fg(theme::AMBER())
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(theme::TEXT())
-        };
-        let label = if view.notifications_unread_count > 0 {
-            format!("{prefix}mentions ({})", view.notifications_unread_count)
-        } else {
-            format!("{prefix}mentions")
-        };
-        Line::from(Span::styled(label, style))
-    };
-    push_row(
-        notifications_line,
-        Some(RoomSlot::Notifications),
-        view.notifications_selected,
-    );
 
     let mut public_rooms: Vec<_> = chat_rooms
         .iter()
@@ -2091,6 +2091,10 @@ fn build_cozy_room_rail_rows(view: &ChatRoomListView<'_>, width: u16) -> RoomLis
         }
     }
     push_slot(RoomSlot::Notifications, &mut push_row);
+    push_slot(RoomSlot::News, &mut push_row);
+    if view.feeds_available {
+        push_slot(RoomSlot::Feeds, &mut push_row);
+    }
 
     let channels: Vec<&(ChatRoom, Vec<ChatMessage>)> = view
         .chat_rooms
@@ -2112,15 +2116,7 @@ fn build_cozy_room_rail_rows(view: &ChatRoomListView<'_>, width: u16) -> RoomLis
 
     push_row(blank(), None, false);
     push_row(section_label("updates"), None, false);
-    for slot in [
-        RoomSlot::News,
-        RoomSlot::Feeds,
-        RoomSlot::Showcase,
-        RoomSlot::Work,
-    ] {
-        if slot == RoomSlot::Feeds && !view.feeds_available {
-            continue;
-        }
+    for slot in [RoomSlot::Showcase, RoomSlot::Work] {
         push_slot(slot, &mut push_row);
     }
 
@@ -3124,11 +3120,84 @@ mod tests {
         assert_eq!(
             hit_slots,
             vec![
+                RoomSlot::Notifications,
                 RoomSlot::News,
                 RoomSlot::Showcase,
                 RoomSlot::Work,
-                RoomSlot::Notifications,
                 RoomSlot::Discover,
+            ]
+        );
+    }
+
+    #[test]
+    fn cozy_room_rail_places_news_and_feeds_below_mentions_with_jump_keys() {
+        let general = ChatRoom {
+            id: Uuid::from_u128(1),
+            created: Utc::now(),
+            updated: Utc::now(),
+            kind: "general".to_string(),
+            visibility: "public".to_string(),
+            auto_join: true,
+            slug: Some("general".to_string()),
+            permanent: true,
+            language_code: None,
+            dm_user_a: None,
+            dm_user_b: None,
+        };
+        let rust = ChatRoom {
+            id: Uuid::from_u128(2),
+            created: Utc::now(),
+            updated: Utc::now(),
+            kind: "topic".to_string(),
+            visibility: "public".to_string(),
+            auto_join: false,
+            slug: Some("rust".to_string()),
+            permanent: false,
+            language_code: None,
+            dm_user_a: None,
+            dm_user_b: None,
+        };
+        let rooms = vec![(general.clone(), Vec::new()), (rust.clone(), Vec::new())];
+        let mut rows_cache = ChatRowsCache::default();
+        let usernames = HashMap::new();
+        let countries = HashMap::new();
+        let message_reactions = HashMap::new();
+        let unread_counts = HashMap::new();
+        let bonsai_glyphs = HashMap::new();
+        let composer = TextArea::default();
+        let news_composer = TextArea::default();
+        let mut view = chat_view(
+            &mut rows_cache,
+            &rooms,
+            None,
+            &usernames,
+            &countries,
+            &message_reactions,
+            &unread_counts,
+            &bonsai_glyphs,
+            &composer,
+            &news_composer,
+        );
+        view.feeds_view.has_feeds = true;
+        view.room_jump_active = true;
+
+        let room_list_view = room_list_view_from_render_input(&view);
+        let room_rows = build_cozy_room_rail_rows(&room_list_view, 40);
+        let keyed_slots: Vec<_> = room_rows
+            .lines
+            .iter()
+            .zip(room_rows.hit_slots.iter())
+            .filter_map(|(line, slot)| slot.map(|slot| (slot, line_text(line))))
+            .collect();
+
+        assert_eq!(
+            &keyed_slots[..5],
+            &[
+                (RoomSlot::Room(general.id), "a lounge".to_string()),
+                (RoomSlot::Notifications, "s mentions".to_string()),
+                (RoomSlot::News, "d news".to_string()),
+                (RoomSlot::Feeds, "f rss".to_string()),
+                (RoomSlot::Room(rust.id), "g rust".to_string()),
             ]
         );
     }

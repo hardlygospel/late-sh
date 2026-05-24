@@ -150,9 +150,9 @@ Visual order is defined in `state.rs::visual_order_for_rooms` and mirrored by co
 1. Favorite real rooms in `users.settings.favorite_room_ids` order.
 2. Core permanent rooms: `general`, `announcements`, `suggestions`, `bugs`.
 3. Notifications/Mentions.
-4. Other non-DM chat-list rooms/channels, excluding favorites.
-5. News.
-6. RSS, when the current user has at least one RSS/Atom subscription.
+4. News.
+5. RSS, when the current user has at least one RSS/Atom subscription.
+6. Other non-DM chat-list rooms/channels, excluding favorites.
 7. Showcase.
 8. Work.
 9. DMs, sorted by unread status, then snapshot latest-message activity, then peer display name. Do not derive this order from lazily loaded room tails.
