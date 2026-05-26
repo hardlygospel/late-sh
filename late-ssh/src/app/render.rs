@@ -156,7 +156,7 @@ struct DrawContext<'a> {
     rooms_filter: crate::app::rooms::filter::RoomsFilter,
     rooms_search_active: bool,
     rooms_search_query: &'a str,
-    rooms_usernames: &'a std::collections::HashMap<uuid::Uuid, String>,
+    rooms_usernames: &'a crate::usernames::UsernameLookup<'a>,
     room_game_registry: &'a crate::app::rooms::registry::RoomGameRegistry,
     active_room_game: Option<&'a dyn crate::app::rooms::backend::ActiveRoomBackend>,
     rooms_chat_view: Option<chat::ui::EmbeddedRoomChatView<'a>>,
@@ -330,7 +330,15 @@ impl App {
         let visualizer = &self.visualizer;
         self.chat
             .request_image_modal_terminal_image(self.terminal_image_protocol);
-        let chat_usernames = self.chat.usernames();
+        let username_directory_snapshot = self
+            .username_directory
+            .as_ref()
+            .map(crate::usernames::snapshot);
+        let render_usernames = crate::usernames::UsernameLookup::new(
+            self.chat.usernames(),
+            username_directory_snapshot.as_deref(),
+        );
+        let chat_usernames = &render_usernames;
         let chat_countries = self.chat.countries();
         let bonsai_glyphs = self.chat.bonsai_glyphs();
         let chat_badges = self.chat.chat_badges();
