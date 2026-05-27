@@ -470,7 +470,7 @@ impl ProfileService {
     ) -> Result<()> {
         let mut client = self.db.get().await?;
         let result = account_link::complete(
-            &mut *client,
+            &mut client,
             current_user_id,
             peer_user_id,
             code,

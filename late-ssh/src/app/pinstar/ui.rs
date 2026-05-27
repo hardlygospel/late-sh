@@ -223,15 +223,16 @@ pub fn draw_pinstar_view(
             // Phase 7: Search match highlight
             let is_search_match = state.search_active
                 && !state.search_query.is_empty()
-                && state.data.nodes.iter().enumerate().any(|(i, n)| {
-                    n.id() == node.id() && state.search_results.contains(&i)
-                });
+                && state
+                    .data
+                    .nodes
+                    .iter()
+                    .enumerate()
+                    .any(|(i, n)| n.id() == node.id() && state.search_results.contains(&i));
 
             let border_color = if state.locked {
                 theme.muted
-            } else if is_search_match {
-                theme.accent
-            } else if is_editing {
+            } else if is_search_match || is_editing {
                 theme.accent
             } else if is_connected_to_selected {
                 theme.success
@@ -362,327 +363,327 @@ pub fn draw_pinstar_view(
         }
     }
     for edge in &state.data.edges {
-            let from_node = state.data.nodes.iter().find(|n| n.id() == edge.from_node);
-            let to_node = state.data.nodes.iter().find(|n| n.id() == edge.to_node);
+        let from_node = state.data.nodes.iter().find(|n| n.id() == edge.from_node);
+        let to_node = state.data.nodes.iter().find(|n| n.id() == edge.to_node);
 
-            if let (Some(f), Some(t)) = (from_node, to_node) {
-                let effective_style = edge.style;
-                let (fx, fy) = f.pos();
-                let (fw, fh) = f.size();
-                let (tx, ty) = t.pos();
-                let (tw, th) = t.size();
+        if let (Some(f), Some(t)) = (from_node, to_node) {
+            let effective_style = edge.style;
+            let (fx, fy) = f.pos();
+            let (fw, fh) = f.size();
+            let (tx, ty) = t.pos();
+            let (tw, th) = t.size();
 
-                let scx = fx + fw / 2.0;
-                let scy = fy + fh / 2.0;
-                let tcx = tx + tw / 2.0;
-                let tcy = ty + th / 2.0;
+            let scx = fx + fw / 2.0;
+            let scy = fy + fh / 2.0;
+            let tcx = tx + tw / 2.0;
+            let tcy = ty + th / 2.0;
 
-                let dx = tcx - scx;
-                let dy = tcy - scy;
+            let dx = tcx - scx;
+            let dy = tcy - scy;
 
-                let is_horizontal_exit = dx.abs() > dy.abs();
+            let is_horizontal_exit = dx.abs() > dy.abs();
 
-                let (ax, ay) = if is_horizontal_exit {
-                    if dx > 0.0 { (fx + fw, scy) } else { (fx, scy) }
+            let (ax, ay) = if is_horizontal_exit {
+                if dx > 0.0 { (fx + fw, scy) } else { (fx, scy) }
+            } else {
+                if dy > 0.0 { (scx, fy + fh) } else { (scx, fy) }
+            };
+
+            let (bx, by) = if is_horizontal_exit {
+                if dx > 0.0 { (tx, tcy) } else { (tx + tw, tcy) }
+            } else {
+                if dy > 0.0 { (tcx, ty) } else { (tcx, ty + th) }
+            };
+
+            let mut sfx = ((ax - state.viewport_x) * state.zoom)
+                + (canvas_area.x as f64 + canvas_area.width as f64 / 2.0);
+            let mut sfy = ((ay - state.viewport_y) * state.zoom)
+                + (canvas_area.y as f64 + canvas_area.height as f64 / 2.0);
+            let mut stx = ((bx - state.viewport_x) * state.zoom)
+                + (canvas_area.x as f64 + canvas_area.width as f64 / 2.0);
+            let mut sty = ((by - state.viewport_y) * state.zoom)
+                + (canvas_area.y as f64 + canvas_area.height as f64 / 2.0);
+
+            // Adjust coordinates for RIGHT and BOTTOM edges to account for grid rendering offset
+            if is_horizontal_exit {
+                if dx > 0.0 {
+                    sfx -= 1.0; // Source exiting from right
                 } else {
-                    if dy > 0.0 { (scx, fy + fh) } else { (scx, fy) }
-                };
-
-                let (bx, by) = if is_horizontal_exit {
-                    if dx > 0.0 { (tx, tcy) } else { (tx + tw, tcy) }
+                    stx -= 1.0; // Target entering from right
+                }
+            } else {
+                if dy > 0.0 {
+                    sfy -= 1.0; // Source exiting from bottom
                 } else {
-                    if dy > 0.0 { (tcx, ty) } else { (tcx, ty + th) }
-                };
+                    sty -= 1.0; // Target entering from bottom
+                }
+            }
 
-                let mut sfx = ((ax - state.viewport_x) * state.zoom)
-                    + (canvas_area.x as f64 + canvas_area.width as f64 / 2.0);
-                let mut sfy = ((ay - state.viewport_y) * state.zoom)
-                    + (canvas_area.y as f64 + canvas_area.height as f64 / 2.0);
-                let mut stx = ((bx - state.viewport_x) * state.zoom)
-                    + (canvas_area.x as f64 + canvas_area.width as f64 / 2.0);
-                let mut sty = ((by - state.viewport_y) * state.zoom)
-                    + (canvas_area.y as f64 + canvas_area.height as f64 / 2.0);
+            let sx = sfx.round() as i32;
+            let sy = sfy.round() as i32;
+            let ex = stx.round() as i32;
+            let ey = sty.round() as i32;
 
-                // Adjust coordinates for RIGHT and BOTTOM edges to account for grid rendering offset
-                if is_horizontal_exit {
-                    if dx > 0.0 {
-                        sfx -= 1.0; // Source exiting from right
-                    } else {
-                        stx -= 1.0; // Target entering from right
+            if sx == ex && sy == ey {
+                continue;
+            }
+
+            let p1 = (sx as i16, sy as i16);
+            let p2 = (ex as i16, ey as i16);
+            let edge_key = if p1 < p2 { (p1, p2) } else { (p2, p1) };
+            if !occupied_edge_pairs.insert(edge_key) {
+                continue;
+            }
+
+            let edge_color = if state.selected_edge_id.as_ref() == Some(&edge.id) {
+                theme.accent
+            } else if edge.color.is_some() {
+                crate::app::pinstar::helpers::PinstarTheme::parse_color(
+                    edge.color.as_deref(),
+                    theme,
+                )
+            } else {
+                theme.muted
+            };
+
+            let buf = frame.buffer_mut();
+
+            let draw_box_line = |buf: &mut ratatui::prelude::Buffer,
+                                 x1: i32,
+                                 y1: i32,
+                                 x2: i32,
+                                 y2: i32,
+                                 horz_char: char,
+                                 vert_char: char| {
+                if y1 == y2 {
+                    let (start, end) = if x1 < x2 { (x1, x2) } else { (x2, x1) };
+                    for x in start..=end {
+                        if x < canvas_area.left() as i32
+                            || x >= canvas_area.right() as i32
+                            || y1 < canvas_area.top() as i32
+                            || y1 >= canvas_area.bottom() as i32
+                        {
+                            continue;
+                        }
+                        let ch = match effective_style {
+                            crate::app::pinstar::data::EdgeStyle::Dashed => {
+                                if (x - start) % 8 >= 4 {
+                                    continue;
+                                }
+                                horz_char
+                            }
+                            _ => horz_char,
+                        };
+                        if let Some(cell) = buf.cell_mut((x as u16, y1 as u16)) {
+                            cell.set_char(ch).set_fg(edge_color);
+                        }
                     }
-                } else {
-                    if dy > 0.0 {
-                        sfy -= 1.0; // Source exiting from bottom
-                    } else {
-                        sty -= 1.0; // Target entering from bottom
+                } else if x1 == x2 {
+                    let (start, end) = if y1 < y2 { (y1, y2) } else { (y2, y1) };
+                    for y in start..=end {
+                        if x1 < canvas_area.left() as i32
+                            || x1 >= canvas_area.right() as i32
+                            || y < canvas_area.top() as i32
+                            || y >= canvas_area.bottom() as i32
+                        {
+                            continue;
+                        }
+                        let ch = match effective_style {
+                            crate::app::pinstar::data::EdgeStyle::Dashed => {
+                                if (y - start) % 8 >= 4 {
+                                    continue;
+                                }
+                                vert_char
+                            }
+                            _ => vert_char,
+                        };
+                        if let Some(cell) = buf.cell_mut((x1 as u16, y as u16)) {
+                            cell.set_char(ch).set_fg(edge_color);
+                        }
                     }
                 }
+            };
 
+            let draw_corner = |buf: &mut ratatui::prelude::Buffer, x: i32, y: i32, ch: char| {
+                if x >= canvas_area.left() as i32
+                    && x < canvas_area.right() as i32
+                    && y >= canvas_area.top() as i32
+                    && y < canvas_area.bottom() as i32
+                    && let Some(cell) = buf.cell_mut((x as u16, y as u16))
+                {
+                    cell.set_char(ch).set_fg(edge_color);
+                }
+            };
+
+            let draw_arrow = |buf: &mut ratatui::prelude::Buffer, ch: char, col: i32, row: i32| {
+                if col >= canvas_area.left() as i32
+                    && col < canvas_area.right() as i32
+                    && row >= canvas_area.top() as i32
+                    && row < canvas_area.bottom() as i32
+                    && let Some(cell) = buf.cell_mut((col as u16, row as u16))
+                {
+                    cell.set_char(ch).set_fg(edge_color);
+                }
+            };
+
+            let use_orthogonal = state.orthogonal_connections;
+
+            if use_orthogonal {
                 let sx = sfx.round() as i32;
                 let sy = sfy.round() as i32;
                 let ex = stx.round() as i32;
                 let ey = sty.round() as i32;
 
-                if sx == ex && sy == ey {
-                    continue;
-                }
+                if is_horizontal_exit {
+                    let mid_x = (sx + ex) / 2;
+                    draw_box_line(buf, sx, sy, mid_x, sy, '\u{2500}', '\u{2502}');
+                    draw_box_line(buf, mid_x, sy, mid_x, ey, '\u{2500}', '\u{2502}');
+                    draw_box_line(buf, mid_x, ey, ex, ey, '\u{2500}', '\u{2502}');
 
-                let p1 = (sx as i16, sy as i16);
-                let p2 = (ex as i16, ey as i16);
-                let edge_key = if p1 < p2 { (p1, p2) } else { (p2, p1) };
-                if !occupied_edge_pairs.insert(edge_key) {
-                    continue;
-                }
-
-                let edge_color = if state.selected_edge_id.as_ref() == Some(&edge.id) {
-                    theme.accent
-                } else if edge.color.is_some() {
-                    crate::app::pinstar::helpers::PinstarTheme::parse_color(
-                        edge.color.as_deref(),
-                        theme,
-                    )
-                } else {
-                    theme.muted
-                };
-
-                let buf = frame.buffer_mut();
-
-                let draw_box_line = |buf: &mut ratatui::prelude::Buffer,
-                                     x1: i32,
-                                     y1: i32,
-                                     x2: i32,
-                                     y2: i32,
-                                     horz_char: char,
-                                     vert_char: char| {
-                    if y1 == y2 {
-                        let (start, end) = if x1 < x2 { (x1, x2) } else { (x2, x1) };
-                        for x in start..=end {
-                            if x < canvas_area.left() as i32
-                                || x >= canvas_area.right() as i32
-                                || y1 < canvas_area.top() as i32
-                                || y1 >= canvas_area.bottom() as i32
-                            {
-                                continue;
-                            }
-                            let ch = match effective_style {
-                                crate::app::pinstar::data::EdgeStyle::Dashed => {
-                                    if (x - start) % 8 >= 4 {
-                                        continue;
-                                    }
-                                    horz_char
-                                }
-                                _ => horz_char,
-                            };
-                            if let Some(cell) = buf.cell_mut((x as u16, y1 as u16)) {
-                                cell.set_char(ch).set_fg(edge_color);
-                            }
-                        }
-                    } else if x1 == x2 {
-                        let (start, end) = if y1 < y2 { (y1, y2) } else { (y2, y1) };
-                        for y in start..=end {
-                            if x1 < canvas_area.left() as i32
-                                || x1 >= canvas_area.right() as i32
-                                || y < canvas_area.top() as i32
-                                || y >= canvas_area.bottom() as i32
-                            {
-                                continue;
-                            }
-                            let ch = match effective_style {
-                                crate::app::pinstar::data::EdgeStyle::Dashed => {
-                                    if (y - start) % 8 >= 4 {
-                                        continue;
-                                    }
-                                    vert_char
-                                }
-                                _ => vert_char,
-                            };
-                            if let Some(cell) = buf.cell_mut((x1 as u16, y as u16)) {
-                                cell.set_char(ch).set_fg(edge_color);
-                            }
-                        }
-                    }
-                };
-
-                let draw_corner = |buf: &mut ratatui::prelude::Buffer, x: i32, y: i32, ch: char| {
-                    if x >= canvas_area.left() as i32
-                        && x < canvas_area.right() as i32
-                        && y >= canvas_area.top() as i32
-                        && y < canvas_area.bottom() as i32
-                        && let Some(cell) = buf.cell_mut((x as u16, y as u16))
-                    {
-                        cell.set_char(ch).set_fg(edge_color);
-                    }
-                };
-
-                let draw_arrow =
-                    |buf: &mut ratatui::prelude::Buffer, ch: char, col: i32, row: i32| {
-                        if col >= canvas_area.left() as i32
-                            && col < canvas_area.right() as i32
-                            && row >= canvas_area.top() as i32
-                            && row < canvas_area.bottom() as i32
-                            && let Some(cell) = buf.cell_mut((col as u16, row as u16))
-                        {
-                            cell.set_char(ch).set_fg(edge_color);
-                        }
-                    };
-
-                let use_orthogonal = state.orthogonal_connections;
-
-                if use_orthogonal {
-                    let sx = sfx.round() as i32;
-                    let sy = sfy.round() as i32;
-                    let ex = stx.round() as i32;
-                    let ey = sty.round() as i32;
-
-                    if is_horizontal_exit {
-                        let mid_x = (sx + ex) / 2;
-                        draw_box_line(buf, sx, sy, mid_x, sy, '\u{2500}', '\u{2502}');
-                        draw_box_line(buf, mid_x, sy, mid_x, ey, '\u{2500}', '\u{2502}');
-                        draw_box_line(buf, mid_x, ey, ex, ey, '\u{2500}', '\u{2502}');
-
-                        if ex > sx {
-                            if ey > sy {
-                                draw_corner(buf, mid_x, sy, '\u{2510}'); // ┐
-                                draw_corner(buf, mid_x, ey, '\u{2514}'); // └
-                            } else if sy > ey {
-                                draw_corner(buf, mid_x, sy, '\u{2518}'); // ┘
-                                draw_corner(buf, mid_x, ey, '\u{250C}'); // ┌
-                            }
-                        } else {
-                            if ey > sy {
-                                draw_corner(buf, mid_x, sy, '\u{250C}'); // ┌
-                                draw_corner(buf, mid_x, ey, '\u{2518}'); // ┘
-                            } else if sy > ey {
-                                draw_corner(buf, mid_x, sy, '\u{2514}'); // └
-                                draw_corner(buf, mid_x, ey, '\u{2510}'); // ┐
-                            }
-                        }
-
-                        let (arrow_c, arrow_col, arrow_row) = if ex > sx {
-                            ('\u{25b6}', ex - 1, ey)
-                        } else {
-                            ('\u{25c0}', ex + 1, ey)
-                        };
-                        draw_arrow(buf, arrow_c, arrow_col, arrow_row);
-                    } else {
-                        let mid_y = (sy + ey) / 2;
-                        draw_box_line(buf, sx, sy, sx, mid_y, '\u{2500}', '\u{2502}');
-                        draw_box_line(buf, sx, mid_y, ex, mid_y, '\u{2500}', '\u{2502}');
-                        draw_box_line(buf, ex, mid_y, ex, ey, '\u{2500}', '\u{2502}');
-
+                    if ex > sx {
                         if ey > sy {
-                            if ex > sx {
-                                draw_corner(buf, sx, mid_y, '\u{2514}'); // └
-                                draw_corner(buf, ex, mid_y, '\u{2510}'); // ┐
-                            } else if sx > ex {
-                                draw_corner(buf, sx, mid_y, '\u{2518}'); // ┘
-                                draw_corner(buf, ex, mid_y, '\u{250C}'); // ┌
-                            }
-                        } else {
-                            if ex > sx {
-                                draw_corner(buf, sx, mid_y, '\u{250C}'); // ┌
-                                draw_corner(buf, ex, mid_y, '\u{2518}'); // ┘
-                            } else if sx > ex {
-                                draw_corner(buf, sx, mid_y, '\u{2510}'); // ┐
-                                draw_corner(buf, ex, mid_y, '\u{2514}'); // └
-                            }
+                            draw_corner(buf, mid_x, sy, '\u{2510}'); // ┐
+                            draw_corner(buf, mid_x, ey, '\u{2514}'); // └
+                        } else if sy > ey {
+                            draw_corner(buf, mid_x, sy, '\u{2518}'); // ┘
+                            draw_corner(buf, mid_x, ey, '\u{250C}'); // ┌
                         }
-
-                        let (arrow_c, arrow_col, arrow_row) = if ey > sy {
-                            ('\u{25bc}', ex, ey - 1)
-                        } else {
-                            ('\u{25b2}', ex, ey + 1)
-                        };
-                        draw_arrow(buf, arrow_c, arrow_col, arrow_row);
+                    } else {
+                        if ey > sy {
+                            draw_corner(buf, mid_x, sy, '\u{250C}'); // ┌
+                            draw_corner(buf, mid_x, ey, '\u{2518}'); // ┘
+                        } else if sy > ey {
+                            draw_corner(buf, mid_x, sy, '\u{2514}'); // └
+                            draw_corner(buf, mid_x, ey, '\u{2510}'); // ┐
+                        }
                     }
+
+                    let (arrow_c, arrow_col, arrow_row) = if ex > sx {
+                        ('\u{25b6}', ex - 1, ey)
+                    } else {
+                        ('\u{25c0}', ex + 1, ey)
+                    };
+                    draw_arrow(buf, arrow_c, arrow_col, arrow_row);
                 } else {
-                    // Non-orthogonal: braille pixel line
-                    let steps = ((sfx - stx).powi(2) + (sfy - sty).powi(2)).sqrt() * 4.0;
-                    let steps = steps.max(1.0) as usize;
-                    let sdx = (stx - sfx) / steps as f64;
-                    let sdy = (sty - sfy) / steps as f64;
-                    let mut cx = sfx;
-                    let mut cy = sfy;
-                    for step in 0..=steps {
-                        let should_draw = match effective_style {
-                            crate::app::pinstar::data::EdgeStyle::Dashed => step % 16 < 8,
-                            _ => true,
-                        };
-                        if should_draw
-                            && cx >= canvas_area.left() as f64
-                            && cx < canvas_area.right() as f64
-                            && cy >= canvas_area.top() as f64
-                            && cy < canvas_area.bottom() as f64
-                        {
-                            let cell_x = cx as u16;
-                            let cell_y = cy as u16;
-                            let dot_x = ((cx - cell_x as f64) * 2.0) as u16;
-                            let dot_y = ((cy - cell_y as f64) * 4.0) as u16;
-                            if let Some(cell) = buf.cell_mut((cell_x, cell_y)) {
-                                let mut braille_char =
-                                    cell.symbol().chars().next().unwrap_or('\u{2800}');
-                                if !('\u{2800}'..='\u{28FF}').contains(&braille_char) {
-                                    braille_char = '\u{2800}';
-                                }
-                                let dot_bit = match (dot_x, dot_y) {
-                                    (0, 0) => 0x01,
-                                    (0, 1) => 0x02,
-                                    (0, 2) => 0x04,
-                                    (1, 0) => 0x08,
-                                    (1, 1) => 0x10,
-                                    (1, 2) => 0x20,
-                                    (0, 3) => 0x40,
-                                    (1, 3) => 0x80,
-                                    _ => 0,
-                                };
-                                let new_code = (braille_char as u32 - 0x2800) | dot_bit;
-                                if let Some(c) = char::from_u32(0x2800 + new_code) {
-                                    cell.set_char(c).set_fg(edge_color);
-                                }
-                            }
-                        }
-                        cx += sdx;
-                        cy += sdy;
-                    }
-                }
+                    let mid_y = (sy + ey) / 2;
+                    draw_box_line(buf, sx, sy, sx, mid_y, '\u{2500}', '\u{2502}');
+                    draw_box_line(buf, sx, mid_y, ex, mid_y, '\u{2500}', '\u{2502}');
+                    draw_box_line(buf, ex, mid_y, ex, ey, '\u{2500}', '\u{2502}');
 
-                // Phase 4a: Edge label rendering
-                if let Some(ref label) = edge.label {
-                    if !label.is_empty() && state.zoom > 0.03 {
-                        let mid_sx = (sfx + stx) / 2.0;
-                        let mid_sy = (sfy + sty) / 2.0;
-                        let mx = mid_sx.round() as i32;
-                        let my = mid_sy.round() as i32;
-                        // Try right-down offset
-                        let lx = mx.saturating_add(1);
-                        let ly = my.saturating_add(1);
-                        if lx >= canvas_area.left() as i32
-                            && lx < canvas_area.right() as i32
-                            && ly >= canvas_area.top() as i32
-                            && ly < canvas_area.bottom() as i32
-                            && let Some(cell) = buf.cell_mut((lx as u16, ly as u16))
-                        {
-                            cell.set_char(' ').set_fg(edge_color);
+                    if ey > sy {
+                        if ex > sx {
+                            draw_corner(buf, sx, mid_y, '\u{2514}'); // └
+                            draw_corner(buf, ex, mid_y, '\u{2510}'); // ┐
+                        } else if sx > ex {
+                            draw_corner(buf, sx, mid_y, '\u{2518}'); // ┘
+                            draw_corner(buf, ex, mid_y, '\u{250C}'); // ┌
                         }
-                        // Render label chars
-                        for (i, ch) in label.chars().enumerate() {
-                            let cx = lx + i as i32;
-                            if cx >= canvas_area.right() as i32 {
-                                break;
+                    } else {
+                        if ex > sx {
+                            draw_corner(buf, sx, mid_y, '\u{250C}'); // ┌
+                            draw_corner(buf, ex, mid_y, '\u{2518}'); // ┘
+                        } else if sx > ex {
+                            draw_corner(buf, sx, mid_y, '\u{2510}'); // ┐
+                            draw_corner(buf, ex, mid_y, '\u{2514}'); // └
+                        }
+                    }
+
+                    let (arrow_c, arrow_col, arrow_row) = if ey > sy {
+                        ('\u{25bc}', ex, ey - 1)
+                    } else {
+                        ('\u{25b2}', ex, ey + 1)
+                    };
+                    draw_arrow(buf, arrow_c, arrow_col, arrow_row);
+                }
+            } else {
+                // Non-orthogonal: braille pixel line
+                let steps = ((sfx - stx).powi(2) + (sfy - sty).powi(2)).sqrt() * 4.0;
+                let steps = steps.max(1.0) as usize;
+                let sdx = (stx - sfx) / steps as f64;
+                let sdy = (sty - sfy) / steps as f64;
+                let mut cx = sfx;
+                let mut cy = sfy;
+                for step in 0..=steps {
+                    let should_draw = match effective_style {
+                        crate::app::pinstar::data::EdgeStyle::Dashed => step % 16 < 8,
+                        _ => true,
+                    };
+                    if should_draw
+                        && cx >= canvas_area.left() as f64
+                        && cx < canvas_area.right() as f64
+                        && cy >= canvas_area.top() as f64
+                        && cy < canvas_area.bottom() as f64
+                    {
+                        let cell_x = cx as u16;
+                        let cell_y = cy as u16;
+                        let dot_x = ((cx - cell_x as f64) * 2.0) as u16;
+                        let dot_y = ((cy - cell_y as f64) * 4.0) as u16;
+                        if let Some(cell) = buf.cell_mut((cell_x, cell_y)) {
+                            let mut braille_char =
+                                cell.symbol().chars().next().unwrap_or('\u{2800}');
+                            if !('\u{2800}'..='\u{28FF}').contains(&braille_char) {
+                                braille_char = '\u{2800}';
                             }
-                            if cx >= canvas_area.left() as i32
-                                && cx < canvas_area.right() as i32
-                                && ly >= canvas_area.top() as i32
-                                && ly < canvas_area.bottom() as i32
-                                && let Some(cell) = buf.cell_mut((cx as u16, ly as u16))
-                            {
-                                cell.set_char(ch).set_fg(theme.muted);
+                            let dot_bit = match (dot_x, dot_y) {
+                                (0, 0) => 0x01,
+                                (0, 1) => 0x02,
+                                (0, 2) => 0x04,
+                                (1, 0) => 0x08,
+                                (1, 1) => 0x10,
+                                (1, 2) => 0x20,
+                                (0, 3) => 0x40,
+                                (1, 3) => 0x80,
+                                _ => 0,
+                            };
+                            let new_code = (braille_char as u32 - 0x2800) | dot_bit;
+                            if let Some(c) = char::from_u32(0x2800 + new_code) {
+                                cell.set_char(c).set_fg(edge_color);
                             }
                         }
+                    }
+                    cx += sdx;
+                    cy += sdy;
+                }
+            }
+
+            // Phase 4a: Edge label rendering
+            if let Some(ref label) = edge.label
+                && !label.is_empty()
+                && state.zoom > 0.03
+            {
+                let mid_sx = (sfx + stx) / 2.0;
+                let mid_sy = (sfy + sty) / 2.0;
+                let mx = mid_sx.round() as i32;
+                let my = mid_sy.round() as i32;
+                // Try right-down offset
+                let lx = mx.saturating_add(1);
+                let ly = my.saturating_add(1);
+                if lx >= canvas_area.left() as i32
+                    && lx < canvas_area.right() as i32
+                    && ly >= canvas_area.top() as i32
+                    && ly < canvas_area.bottom() as i32
+                    && let Some(cell) = buf.cell_mut((lx as u16, ly as u16))
+                {
+                    cell.set_char(' ').set_fg(edge_color);
+                }
+                // Render label chars
+                for (i, ch) in label.chars().enumerate() {
+                    let cx = lx + i as i32;
+                    if cx >= canvas_area.right() as i32 {
+                        break;
+                    }
+                    if cx >= canvas_area.left() as i32
+                        && cx < canvas_area.right() as i32
+                        && ly >= canvas_area.top() as i32
+                        && ly < canvas_area.bottom() as i32
+                        && let Some(cell) = buf.cell_mut((cx as u16, ly as u16))
+                    {
+                        cell.set_char(ch).set_fg(theme.muted);
                     }
                 }
             }
         }
+    }
     for node in &state.data.nodes {
         if matches!(node, crate::app::pinstar::data::CanvasNode::Group(_)) {
             continue;
@@ -750,15 +751,16 @@ pub fn draw_pinstar_view(
         // Phase 7: Search match highlight
         let is_search_match = state.search_active
             && !state.search_query.is_empty()
-            && state.data.nodes.iter().enumerate().any(|(i, n)| {
-                n.id() == node.id() && state.search_results.contains(&i)
-            });
+            && state
+                .data
+                .nodes
+                .iter()
+                .enumerate()
+                .any(|(i, n)| n.id() == node.id() && state.search_results.contains(&i));
 
         let border_color = if state.locked {
             theme.muted
-        } else if is_search_match {
-            theme.accent
-        } else if is_editing {
+        } else if is_search_match || is_editing {
             theme.accent
         } else if is_connected_to_selected {
             theme.success
@@ -845,17 +847,18 @@ pub fn draw_pinstar_view(
         }
 
         // Shape badge (unchanged)
-        if matches!(node, crate::app::pinstar::data::CanvasNode::Text(_)) && !is_editing {
-            if let Some(shape) = text_shape {
-                let shape_badge = match shape {
-                    TextNodeShape::Rectangle => "□ ",
-                    TextNodeShape::Diamond => "◇ ",
-                    TextNodeShape::Circle => "◯ ",
-                    TextNodeShape::Cylinder => "⛁ ",
-                    TextNodeShape::Stadium => "⬭ ",
-                };
-                node_title = format!("{}{}", shape_badge, node_title);
-            }
+        if matches!(node, crate::app::pinstar::data::CanvasNode::Text(_))
+            && !is_editing
+            && let Some(shape) = text_shape
+        {
+            let shape_badge = match shape {
+                TextNodeShape::Rectangle => "□ ",
+                TextNodeShape::Diamond => "◇ ",
+                TextNodeShape::Circle => "◯ ",
+                TextNodeShape::Cylinder => "⛁ ",
+                TextNodeShape::Stadium => "⬭ ",
+            };
+            node_title = format!("{}{}", shape_badge, node_title);
         }
 
         // Phase 3c: lock cue — outermost prefix
@@ -940,7 +943,6 @@ pub fn draw_pinstar_view(
                 let text_content =
                     get_text_with_divider(&display_text, text_rect.width as usize, border_color);
 
-                let mut render_rect = text_rect;
                 if !is_editing {
                     // Keep wrap, center text horizontally + vertically when not editing.
                     let mut est_lines = 0;
@@ -957,7 +959,7 @@ pub fn draw_pinstar_view(
                     } else {
                         0
                     };
-                    render_rect = Rect::new(
+                    let render_rect = Rect::new(
                         text_rect.x,
                         text_rect.y + y_offset as u16,
                         text_rect.width,
@@ -983,15 +985,16 @@ pub fn draw_pinstar_view(
                         let buf = frame.buffer_mut();
                         for (i, ch) in badge_text.chars().enumerate() {
                             let x = badge_x + i as u16;
-                            if x < render_rect.right() && badge_y >= render_rect.y {
-                                if let Some(cell) = buf.cell_mut((x, badge_y)) {
-                                    cell.set_char(ch);
-                                    cell.set_style(
-                                        Style::default()
-                                            .add_modifier(ratatui::style::Modifier::BOLD)
-                                            .fg(theme.accent),
-                                    );
-                                }
+                            if x < render_rect.right()
+                                && badge_y >= render_rect.y
+                                && let Some(cell) = buf.cell_mut((x, badge_y))
+                            {
+                                cell.set_char(ch);
+                                cell.set_style(
+                                    Style::default()
+                                        .add_modifier(ratatui::style::Modifier::BOLD)
+                                        .fg(theme.accent),
+                                );
                             }
                         }
                     }
@@ -1055,15 +1058,16 @@ pub fn draw_pinstar_view(
                 let buf = frame.buffer_mut();
                 for (i, ch) in badge_text.chars().enumerate() {
                     let x = badge_x + i as u16;
-                    if x < centered_rect.right() && badge_y >= centered_rect.y {
-                        if let Some(cell) = buf.cell_mut((x, badge_y)) {
-                            cell.set_char(ch).set_fg(theme.accent);
-                            cell.set_style(
-                                Style::default()
-                                    .add_modifier(ratatui::style::Modifier::BOLD)
-                                    .fg(theme.accent),
-                            );
-                        }
+                    if x < centered_rect.right()
+                        && badge_y >= centered_rect.y
+                        && let Some(cell) = buf.cell_mut((x, badge_y))
+                    {
+                        cell.set_char(ch).set_fg(theme.accent);
+                        cell.set_style(
+                            Style::default()
+                                .add_modifier(ratatui::style::Modifier::BOLD)
+                                .fg(theme.accent),
+                        );
                     }
                 }
             }
@@ -1114,7 +1118,8 @@ pub fn draw_pinstar_view(
         }
 
         // Phase 9a: Resize handle — subtle dot when selected, [↘] when actively resizing
-        if is_selected && !is_editing
+        if is_selected
+            && !is_editing
             && state.resizing_node_id.as_ref() != Some(&node.id().to_string())
         {
             let dot_rect = Rect::new(
@@ -1613,7 +1618,7 @@ fn build_status_spans(state: &PinstarState, theme: &PinstarTheme) -> Vec<Span<'s
         format!("◎ {}%", raw_pct.round() as u16)
     };
     let display_pct = raw_pct.round() as u16;
-    let zoom_accent = display_pct < 50 || display_pct > 200;
+    let zoom_accent = !(50..=200).contains(&display_pct);
     let zoom_style = if zoom_accent {
         Style::default()
             .fg(theme.accent)
@@ -1634,8 +1639,16 @@ fn build_status_spans(state: &PinstarState, theme: &PinstarTheme) -> Vec<Span<'s
 
     // 9b: Box-select live count
     if let (Some(start), Some(end)) = (state.select_rect_start, state.select_rect_end) {
-        let (min_x, max_x) = if start.0 < end.0 { (start.0, end.0) } else { (end.0, start.0) };
-        let (min_y, max_y) = if start.1 < end.1 { (start.1, end.1) } else { (end.1, start.1) };
+        let (min_x, max_x) = if start.0 < end.0 {
+            (start.0, end.0)
+        } else {
+            (end.0, start.0)
+        };
+        let (min_y, max_y) = if start.1 < end.1 {
+            (start.1, end.1)
+        } else {
+            (end.1, start.1)
+        };
         let count = state
             .data
             .nodes

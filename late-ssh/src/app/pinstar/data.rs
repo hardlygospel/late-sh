@@ -178,10 +178,11 @@ pub fn is_generated_id(id: &str) -> bool {
             return true;
         }
     }
-    if let Some(rest) = id.strip_prefix("group_") {
-        if rest.len() == 36 && rest.chars().all(|c| c.is_ascii_hexdigit() || c == '-') {
-            return true;
-        }
+    if let Some(rest) = id.strip_prefix("group_")
+        && rest.len() == 36
+        && rest.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
+    {
+        return true;
     }
     if id.len() == 16 && id.chars().all(|c| c.is_ascii_hexdigit()) {
         return true;

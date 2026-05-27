@@ -3099,8 +3099,8 @@ mod tests {
             "reaction choices missing from {row_1:?}",
         );
         assert!(
-            row_1.contains("1 👍  2 🧡"),
-            "reaction choices should use two separator spaces: {row_1:?}",
+            row_1.contains("1 👍   2 🧡"),
+            "reaction choices should preserve two separator spaces plus wide emoji padding: {row_1:?}",
         );
         assert!(
             row_1.contains("8 🤔"),
@@ -3111,12 +3111,12 @@ mod tests {
             "reaction owner hint missing from {row_1:?}",
         );
         assert!(
-            !row_1.contains("0 👋 f list"),
-            "reaction owner hint should not collapse to one separator space: {row_1:?}",
+            !row_1.contains("0 👋  f list"),
+            "reaction owner hint should not collapse below two separator spaces plus wide emoji padding: {row_1:?}",
         );
         assert!(
-            row_1.contains("0 👋  f list"),
-            "reaction owner hint should use two separator spaces: {row_1:?}",
+            row_1.contains("0 👋   f list"),
+            "reaction owner hint should preserve two separator spaces plus wide emoji padding: {row_1:?}",
         );
     }
 

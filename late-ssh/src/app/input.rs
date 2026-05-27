@@ -1269,8 +1269,7 @@ fn handle_dedicated_screen_input(app: &mut App, ctx: InputContext, event: &Parse
                             // emit raw bytes; 0x7F (DEL) = plain Backspace.
                             // Matches chat composer handling at line ~1086.
                             0x08 => {
-                                modifiers |=
-                                    crossterm::event::KeyModifiers::CONTROL;
+                                modifiers |= crossterm::event::KeyModifiers::CONTROL;
                                 crossterm::event::KeyCode::Backspace
                             }
                             0x7F => crossterm::event::KeyCode::Backspace,
@@ -1346,10 +1345,8 @@ fn handle_dedicated_screen_input(app: &mut App, ctx: InputContext, event: &Parse
                         b'D' => crossterm::event::KeyCode::Left,
                         _ => return false,
                     };
-                    let key = crossterm::event::KeyEvent::new(
-                        code,
-                        crossterm::event::KeyModifiers::ALT,
-                    );
+                    let key =
+                        crossterm::event::KeyEvent::new(code, crossterm::event::KeyModifiers::ALT);
                     handled = crate::app::pinstar::input::handle_pinstar_key(
                         state,
                         key,

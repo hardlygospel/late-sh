@@ -1826,9 +1826,7 @@ fn draw_link_account_status(frame: &mut Frame, area: Rect, state: &SettingsModal
     let dialog = state.link_account_dialog();
     let color = if dialog.pending() {
         theme::AMBER()
-    } else if status == "Link code ready." {
-        theme::SUCCESS()
-    } else if dialog.step() == LinkAccountStep::Pending {
+    } else if status == "Link code ready." || dialog.step() == LinkAccountStep::Pending {
         theme::SUCCESS()
     } else {
         theme::ERROR()

@@ -2085,7 +2085,11 @@ impl PinstarState {
             self.record_undo_state();
             for edge in &mut self.data.edges {
                 if edge.id == id {
-                    edge.label = if label.is_empty() { None } else { Some(label.clone()) };
+                    edge.label = if label.is_empty() {
+                        None
+                    } else {
+                        Some(label.clone())
+                    };
                     break;
                 }
             }
@@ -2149,10 +2153,22 @@ impl PinstarState {
             // Offset position by 3 canvas units per paste
             let (x, y) = new_node.pos();
             match &mut new_node {
-                CanvasNode::Text(n) => { n.x = x + 3.0; n.y = y + 3.0; }
-                CanvasNode::File(n) => { n.x = x + 3.0; n.y = y + 3.0; }
-                CanvasNode::Link(n) => { n.x = x + 3.0; n.y = y + 3.0; }
-                CanvasNode::Group(n) => { n.x = x + 3.0; n.y = y + 3.0; }
+                CanvasNode::Text(n) => {
+                    n.x = x + 3.0;
+                    n.y = y + 3.0;
+                }
+                CanvasNode::File(n) => {
+                    n.x = x + 3.0;
+                    n.y = y + 3.0;
+                }
+                CanvasNode::Link(n) => {
+                    n.x = x + 3.0;
+                    n.y = y + 3.0;
+                }
+                CanvasNode::Group(n) => {
+                    n.x = x + 3.0;
+                    n.y = y + 3.0;
+                }
             }
             self.data.nodes.push(new_node);
             pasted_ids.push(new_id);
@@ -2194,9 +2210,12 @@ impl PinstarState {
                 crate::app::pinstar::data::CanvasNode::Link(n) => {
                     n.url.to_lowercase().contains(&query)
                 }
-                crate::app::pinstar::data::CanvasNode::Group(n) => {
-                    n.label.as_deref().unwrap_or("").to_lowercase().contains(&query)
-                }
+                crate::app::pinstar::data::CanvasNode::Group(n) => n
+                    .label
+                    .as_deref()
+                    .unwrap_or("")
+                    .to_lowercase()
+                    .contains(&query),
             };
             if matches {
                 results.push(idx);
@@ -2251,13 +2270,13 @@ impl PinstarState {
     }
 
     pub fn search_apply_selection(&mut self) {
-        if let Some(&idx) = self.search_results.get(self.search_selected) {
-            if let Some(node) = self.data.nodes.get(idx) {
-                self.selected_node_id = Some(node.id().to_string());
-                self.drag_captured_nodes.clear();
-                self.selected_edge_id = None;
-                self.center_on_selected();
-            }
+        if let Some(&idx) = self.search_results.get(self.search_selected)
+            && let Some(node) = self.data.nodes.get(idx)
+        {
+            self.selected_node_id = Some(node.id().to_string());
+            self.drag_captured_nodes.clear();
+            self.selected_edge_id = None;
+            self.center_on_selected();
         }
         self.search_deactivate();
     }
