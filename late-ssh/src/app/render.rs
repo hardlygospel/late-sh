@@ -278,6 +278,7 @@ impl App {
         // them this frame can't leave a stale target behind.
         self.last_dashboard_activity_rect.set(None);
         self.chat.last_composer_rect.set(None);
+        self.chat.last_chat_hit_layout.set(None);
 
         // Init theme and layout sync — preview settings-modal draft live while open.
         let active_theme_id = if self.show_settings {
@@ -455,6 +456,7 @@ impl App {
                 inline_images: &self.chat.inline_image_cache,
                 keep_composer_focused: self.profile_state.profile().keep_composer_focused,
                 composer_rect_slot: Some(&self.chat.last_composer_rect),
+                chat_hit_slot: Some(&self.chat.last_chat_hit_layout),
             },
             activity_scroll: self.dashboard_activity_scroll,
             activity_rect_slot: Some(&self.last_dashboard_activity_rect),
@@ -581,6 +583,7 @@ impl App {
             work_composing,
             keep_composer_focused: self.profile_state.profile().keep_composer_focused,
             composer_rect_slot: Some(&self.chat.last_composer_rect),
+            chat_hit_slot: Some(&self.chat.last_chat_hit_layout),
         };
         self.settings_modal_state
             .set_modal_width(settings_modal::ui::MODAL_WIDTH);
@@ -616,6 +619,7 @@ impl App {
                     chat_badges,
                     keep_composer_focused: self.profile_state.profile().keep_composer_focused,
                     composer_rect_slot: Some(&self.chat.last_composer_rect),
+                    chat_hit_slot: Some(&self.chat.last_chat_hit_layout),
                 });
         let mut terminal_image_frame = TerminalImageFrame::default();
 
