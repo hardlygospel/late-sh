@@ -218,7 +218,7 @@ impl BonsaiV2State {
             vigor: tree.vigor,
             water_stress: tree.water_stress.max(0),
             last_simulated_date: tree.last_simulated_date,
-            age_days: (today - tree.planted_at.date_naive()).num_days().max(0),
+            age_days: simulated_age_days(tree.planted_at, tree.last_simulated_date),
             graph,
             selected_branch_id,
             mode: BonsaiV2Mode::from_str(&tree.mode),
@@ -230,6 +230,46 @@ impl BonsaiV2State {
         if state.apply_elapsed_days(today) {
             state.persist();
         }
+        state
+    }
+
+    /// Build a read-only state for rendering another user's tree (profile
+    /// view). Catches elapsed days up in memory so the silhouette is accurate,
+    /// but never persists, so viewing never mutates the owner's tree. Always
+    /// renders standard 2D.
+    pub(crate) fn view_only(user_id: Uuid, svc: BonsaiService, tree: BonsaiV2Tree) -> Self {
+        let today = BonsaiService::today();
+        let (graph, normalized_ids) =
+            serde_json::from_value::<BonsaiGraph>(tree.branch_graph.clone())
+                .map(normalize_graph_segments)
+                .unwrap_or_else(|_| (seeded_graph(tree.seed, 0), BTreeMap::new()));
+        let selected_branch_id = tree
+            .selected_branch_id
+            .and_then(|id| normalized_ids.get(&id).copied())
+            .or(tree.selected_branch_id)
+            .or_else(|| graph.selected_fallback());
+        let mut state = Self {
+            user_id,
+            svc,
+            seed: tree.seed,
+            planted_at: tree.planted_at,
+            last_watered: tree.last_watered,
+            is_alive: tree.is_alive,
+            vigor: tree.vigor,
+            water_stress: tree.water_stress.max(0),
+            last_simulated_date: tree.last_simulated_date,
+            age_days: simulated_age_days(tree.planted_at, tree.last_simulated_date),
+            graph,
+            selected_branch_id,
+            mode: BonsaiV2Mode::from_str(&tree.mode),
+            message: None,
+            state_revision: tree.state_revision,
+            ticks_since_growth: 0,
+        };
+        state.ensure_selection();
+        // In-memory catch-up only; intentionally no `persist()` so a viewer
+        // never writes to the viewed user's row.
+        state.apply_elapsed_days(today);
         state
     }
 
@@ -692,6 +732,12 @@ impl BonsaiV2State {
     }
 }
 
+fn simulated_age_days(planted_at: DateTime<Utc>, last_simulated_date: NaiveDate) -> i64 {
+    (last_simulated_date - planted_at.date_naive())
+        .num_days()
+        .max(0)
+}
+
 #[derive(Debug, Clone, Copy)]
 enum GrowthCause {
     Daily,
@@ -938,9 +984,7 @@ fn grow_tip_once(
     if graph.branches.len() >= MAX_BRANCHES {
         return None;
     }
-    let Some(tip) = graph.branch(tip_id).cloned() else {
-        return None;
-    };
+    let tip = graph.branch(tip_id).cloned()?;
     if water_stress >= 80 && hash_parts(seed, tip_id as u64, graph.next_id as u64) % 100 < 24 {
         if let Some(branch) = graph.branch_mut(tip_id) {
             branch.status = BranchStatus::Deadwood;
@@ -973,13 +1017,13 @@ fn grow_tip_once(
         thickness,
         (vigor - water_stress / 2).clamp(20, 95) as i16,
     );
-    if let Some(new_id) = new_id {
-        if let Some(child) = graph.branch_mut(new_id) {
-            child.bend_x = tip.bend_x;
-            child.bend_y = tip.bend_y;
-            if matches!(tip.status, BranchStatus::Wired) {
-                child.status = BranchStatus::Wired;
-            }
+    if let Some(new_id) = new_id
+        && let Some(child) = graph.branch_mut(new_id)
+    {
+        child.bend_x = tip.bend_x;
+        child.bend_y = tip.bend_y;
+        if matches!(tip.status, BranchStatus::Wired) {
+            child.status = BranchStatus::Wired;
         }
     }
     let continuation_id = new_id?;
@@ -1008,7 +1052,7 @@ fn split_tip_once(graph: &mut BonsaiGraph, tip_id: i32, seed: i64) -> Option<(i3
     if !matches!(tip.status, BranchStatus::Growing | BranchStatus::Wired) || !graph.is_tip(tip_id) {
         return None;
     }
-    let first_left = hash_parts(seed, tip_id as u64, graph.next_id as u64) % 2 == 0;
+    let first_left = hash_parts(seed, tip_id as u64, graph.next_id as u64).is_multiple_of(2);
     let candidates = if first_left {
         [(-1, 1), (1, 1)]
     } else {
@@ -1230,7 +1274,7 @@ fn side_shoot_threshold(cause: GrowthCause, _tip: &Branch, vigor: i32, water_str
 }
 
 fn side_shoot_step(seed: i64, next_id: u64, cause: GrowthCause, water_stress: i32) -> (i16, i16) {
-    let side = if hash_parts(seed, next_id, 7) % 2 == 0 {
+    let side = if hash_parts(seed, next_id, 7).is_multiple_of(2) {
         -1
     } else {
         1
