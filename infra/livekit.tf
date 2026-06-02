@@ -99,7 +99,7 @@ resource "kubernetes_deployment_v1" "livekit" {
           image = var.LIVEKIT_IMAGE
           name  = "livekit"
 
-          command = ["livekit-server"]
+          command = ["/livekit-server"]
           args    = ["--config", "/etc/livekit/config.yml"]
 
           port {
