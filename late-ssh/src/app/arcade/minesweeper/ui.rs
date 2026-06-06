@@ -18,6 +18,7 @@ const CELL_HIDDEN: u8 = 0;
 const CELL_REVEALED: u8 = 1;
 const CELL_FLAGGED: u8 = 2;
 const CELL_MINE_HIT: u8 = 3;
+const CHORD_PREVIEW_GLYPH: &str = "\u{2591}\u{2591}\u{2591}";
 
 pub fn draw_game(frame: &mut Frame, area: Rect, state: &State, show_bottom_bar: bool) {
     let diff = state.difficulty();
@@ -187,7 +188,7 @@ fn cell_span(state: &State, row: usize, col: usize) -> Span<'static> {
     let is_chord_target = is_chord_preview_target(state, row, col);
     let mine_map = state.mine_map();
 
-    let (glyph, mut style) = match cell {
+    let (mut glyph, mut style) = match cell {
         CELL_REVEALED => {
             let count = adjacent_mine_count(mine_map, row, col);
             if count == 0 {
@@ -216,7 +217,7 @@ fn cell_span(state: &State, row: usize, col: usize) -> Span<'static> {
     };
 
     if is_chord_target {
-        style = style.bg(theme::BG_SELECTION()).fg(theme::TEXT_BRIGHT());
+        apply_chord_preview_style(&mut glyph, &mut style);
     }
 
     if is_selected {
@@ -227,6 +228,11 @@ fn cell_span(state: &State, row: usize, col: usize) -> Span<'static> {
     }
 
     Span::styled(glyph, style)
+}
+
+fn apply_chord_preview_style(glyph: &mut String, style: &mut Style) {
+    *glyph = CHORD_PREVIEW_GLYPH.to_string();
+    *style = Style::default().fg(theme::BORDER_DIM());
 }
 
 fn flag_span_parts(
@@ -357,4 +363,23 @@ fn lives_color(lives: u8) -> Color {
 
 fn row_label(row: usize) -> char {
     (b'A' + row as u8) as char
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn chord_preview_uses_subtle_glyph_without_background() {
+        let mut glyph = " \u{00b7} ".to_string();
+        let mut style = Style::default()
+            .fg(theme::TEXT_BRIGHT())
+            .bg(theme::BG_SELECTION());
+
+        apply_chord_preview_style(&mut glyph, &mut style);
+
+        assert_eq!(glyph, CHORD_PREVIEW_GLYPH);
+        assert_eq!(style.fg, Some(theme::BORDER_DIM()));
+        assert_eq!(style.bg, None);
+    }
 }
