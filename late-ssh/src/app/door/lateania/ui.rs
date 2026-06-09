@@ -195,6 +195,7 @@ fn draw_side(
         Panel::Examine => examine_panel(view, state.cursor()),
         Panel::Titles => titles_panel(view, state.cursor()),
         Panel::Quests => quests_panel(view),
+        Panel::Follow => follow_panel(view, state.cursor(), usernames),
     };
     frame.render_widget(Paragraph::new(lines), area);
 }
@@ -394,6 +395,27 @@ fn room_panel(view: &PlayerView, usernames: &UsernameLookup<'_>) -> Vec<Line<'st
             };
             lines.push(Line::from(Span::styled(
                 format!("  {name}{tag}"),
+                Style::default().fg(color),
+            )));
+        }
+    }
+    if !view.wildlife.is_empty() {
+        lines.push(section("Wildlife"));
+        for w in &view.wildlife {
+            let (marker, color) = match w.kind.as_str() {
+                "boon" => ("✦ ", theme::BADGE_GOLD()),
+                "huntable" => ("» ", theme::AMBER()),
+                _ => ("~ ", theme::TEXT_DIM()),
+            };
+            let detail = if !w.perk.is_empty() {
+                format!(" — a boon ({})", w.perk)
+            } else if w.kind == "huntable" {
+                " — game (attack to hunt)".to_string()
+            } else {
+                String::new()
+            };
+            lines.push(Line::from(Span::styled(
+                format!("  {marker}{}{detail}", w.name),
                 Style::default().fg(color),
             )));
         }
@@ -899,6 +921,53 @@ fn hp_color(hp: i32, max_hp: i32) -> ratatui::style::Color {
     } else {
         theme::SUCCESS()
     }
+}
+
+/// Follow panel: a selectable list of adventurers in the room. Enter follows the
+/// highlighted one (or stops, if you are already following them).
+fn follow_panel(
+    view: &PlayerView,
+    cursor: usize,
+    usernames: &UsernameLookup<'_>,
+) -> Vec<Line<'static>> {
+    let mut lines = vec![section("Follow")];
+    if view.occupants.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  no one else is here",
+            Style::default().fg(theme::TEXT_DIM()),
+        )));
+    }
+    for (i, occ) in view.occupants.iter().enumerate() {
+        let name = usernames
+            .get(&occ.user_id)
+            .cloned()
+            .unwrap_or_else(|| "adventurer".to_string());
+        let selected = i == cursor;
+        let following = view.following == Some(occ.user_id);
+        let marker = if selected { ">" } else { " " };
+        let tag = if following { " (following)" } else { "" };
+        let style = if selected {
+            Style::default()
+                .fg(theme::TEXT_BRIGHT())
+                .bg(theme::BG_SELECTION())
+                .add_modifier(Modifier::BOLD)
+        } else if following {
+            Style::default().fg(theme::MENTION())
+        } else {
+            Style::default().fg(theme::SUCCESS())
+        };
+        lines.push(Line::from(Span::styled(
+            format!("{marker} {name}{tag}"),
+            style,
+        )));
+    }
+    lines.push(Line::raw(""));
+    lines.push(hint("w/s", "select  Enter follow/stop"));
+    if view.following.is_some() {
+        lines.push(hint("x", "stop following"));
+    }
+    lines.push(hint("f", "close"));
+    lines
 }
 
 fn rarity_color(rarity: &str) -> ratatui::style::Color {
