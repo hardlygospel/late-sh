@@ -27,6 +27,8 @@ mod tests {
     use super::*;
     use russh::keys::HashAlg;
 
+    const KAT_FINGERPRINT: &str = "SHA256:JA9AvdNoX1ZZMA43t1qMUzq73OW609Fme6rrle84UeU";
+
     fn fingerprint(secret: &str) -> String {
         derive_client_key(secret)
             .public_key()
@@ -53,6 +55,3 @@ mod tests {
         assert_eq!(fingerprint("late-nethack-kat-v1"), KAT_FINGERPRINT);
     }
 }
-
-#[cfg(test)]
-const KAT_FINGERPRINT: &str = "SHA256:JA9AvdNoX1ZZMA43t1qMUzq73OW609Fme6rrle84UeU";
