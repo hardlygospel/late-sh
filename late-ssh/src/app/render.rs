@@ -178,6 +178,14 @@ struct DrawContext<'a> {
     directory_tab: crate::app::directory::state::DirectoryTab,
     pinstar_state: Option<&'a mut crate::app::pinstar::state::PinstarState>,
     pinstar_browser: Option<&'a crate::app::pinstar::browser::DiagramBrowser>,
+    worldcup_snapshot: Option<std::sync::Arc<crate::app::worldcup::model::WorldCupSnapshot>>,
+    worldcup_state: &'a crate::app::worldcup::state::State,
+    /// The account's flag-emoji tweak, shared with chat/shop: when set, flags
+    /// are replaced by text fallbacks for terminals that can't render them.
+    show_flag_fallback: bool,
+    /// Client is kitty specifically — it splits regional-indicator flags in the
+    /// World Cup overview's rightmost column (see `App::terminal_is_kitty`).
+    terminal_is_kitty: bool,
     artboard_interacting: bool,
     leaderboard: &'a Arc<LeaderboardData>,
     visualizer: &'a Visualizer,
@@ -847,6 +855,10 @@ impl App {
                         directory_tab: self.directory_state.tab,
                         pinstar_state: pinstar_state_taken.as_mut(),
                         pinstar_browser,
+                        worldcup_snapshot: self.worldcup_rx.as_ref().map(|rx| rx.borrow().clone()),
+                        worldcup_state: &self.worldcup,
+                        show_flag_fallback: self.profile_state.profile().show_flag_fallback,
+                        terminal_is_kitty: self.terminal_is_kitty,
                         artboard_interacting: self.artboard_interacting,
                         leaderboard: &self.leaderboard,
                         visualizer,
@@ -1258,6 +1270,20 @@ impl App {
                 terminal_images,
                 ctx.terminal_image_protocol,
             ),
+            Screen::WorldCup => {
+                let empty = crate::app::worldcup::model::WorldCupSnapshot::default();
+                let snapshot = ctx.worldcup_snapshot.as_deref().unwrap_or(&empty);
+                crate::app::worldcup::ui::draw(
+                    frame,
+                    content_area,
+                    crate::app::worldcup::ui::WorldCupView {
+                        snapshot,
+                        state: ctx.worldcup_state,
+                        show_flags: !ctx.show_flag_fallback,
+                        terminal_is_kitty: ctx.terminal_is_kitty,
+                    },
+                );
+            }
         }
 
         if let Some(sidebar_area) = sidebar_area {
@@ -1487,6 +1513,7 @@ fn app_frame_title(screen: Screen, ctx: &DrawContext<'_>) -> Line<'static> {
         (Screen::Rooms, "4"),
         (Screen::Artboard, "5"),
         (Screen::Pinstar, "6"),
+        (Screen::WorldCup, "7"),
     ];
     for (idx, (tab_screen, key)) in tabs.iter().enumerate() {
         if idx > 0 {
@@ -1527,6 +1554,7 @@ fn app_frame_title(screen: Screen, ctx: &DrawContext<'_>) -> Line<'static> {
         Screen::Artboard => "Artboard",
         Screen::Rooms => "Tables",
         Screen::Pinstar => "Directory",
+        Screen::WorldCup => "World Cup",
     };
     spans.push(Span::styled(
         " | ",
@@ -1597,6 +1625,30 @@ fn app_frame_title(screen: Screen, ctx: &DrawContext<'_>) -> Line<'static> {
 
     if screen == Screen::Dashboard {
         append_home_title_extras(&mut spans, ctx);
+    }
+
+    if screen == Screen::WorldCup {
+        spans.push(Span::styled("· ", Style::default().fg(theme::BORDER_DIM())));
+        spans.push(Span::styled(
+            "Space",
+            Style::default()
+                .fg(theme::AMBER_DIM())
+                .add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::styled(
+            " bracket · ",
+            Style::default().fg(theme::TEXT_DIM()),
+        ));
+        spans.push(Span::styled(
+            "j/k",
+            Style::default()
+                .fg(theme::AMBER_DIM())
+                .add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::styled(
+            " scroll ",
+            Style::default().fg(theme::TEXT_DIM()),
+        ));
     }
 
     if screen == Screen::Arcade && ctx.is_playing_game {
