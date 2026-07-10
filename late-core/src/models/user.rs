@@ -153,7 +153,7 @@ pub const RIGHT_SIDEBAR_COMPONENT_COUNT: usize = 5;
 pub enum RightSidebarComponent {
     Visualizer,
     Music,
-    Pet,
+    Activity,
     Bonsai,
     Daily,
 }
@@ -161,21 +161,21 @@ pub enum RightSidebarComponent {
 impl RightSidebarComponent {
     /// Default order, top to bottom. Used when a user has no stored list and
     /// to backfill any panels missing from a stored list. Space cuts from the
-    /// top, so the panels that matter most under shrink (daily, music) sit at
-    /// the bottom.
+    /// top (the visualizer goes first under shrink); Activity is the one
+    /// flexible panel and absorbs leftover rows.
     pub const ALL: [RightSidebarComponent; RIGHT_SIDEBAR_COMPONENT_COUNT] = [
         Self::Visualizer,
-        Self::Pet,
-        Self::Bonsai,
-        Self::Daily,
         Self::Music,
+        Self::Daily,
+        Self::Activity,
+        Self::Bonsai,
     ];
 
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Visualizer => "visualizer",
             Self::Music => "music",
-            Self::Pet => "pet",
+            Self::Activity => "activity",
             Self::Bonsai => "bonsai",
             Self::Daily => "daily",
         }
@@ -185,7 +185,7 @@ impl RightSidebarComponent {
         match key.trim() {
             "visualizer" => Some(Self::Visualizer),
             "music" => Some(Self::Music),
-            "pet" => Some(Self::Pet),
+            "activity" => Some(Self::Activity),
             "bonsai" => Some(Self::Bonsai),
             "daily" => Some(Self::Daily),
             _ => None,
@@ -196,17 +196,15 @@ impl RightSidebarComponent {
         match self {
             Self::Visualizer => "Visualizer",
             Self::Music => "Audio playback",
-            Self::Pet => "Pet companion",
+            Self::Activity => "Activity",
             Self::Bonsai => "Bonsai",
-            Self::Daily => "Daily Games",
+            Self::Daily => "Lobby",
         }
     }
 
     /// Whether the panel starts enabled for users without a stored setting.
-    /// Pet ships off by default (it stays available in settings); everything
-    /// else is on.
     pub fn default_enabled(self) -> bool {
-        !matches!(self, Self::Pet)
+        true
     }
 }
 
@@ -235,9 +233,9 @@ pub fn default_right_sidebar_components() -> Vec<RightSidebarComponentSetting> {
 ///
 /// Missing panels are backfilled **enabled**, not at `default_enabled()`: a
 /// user with a stored list is an existing user whose effective state must not
-/// silently change when a new panel ships. `default_enabled()` (which ships
-/// Pet off) applies only to the no-stored-list path in
-/// `default_right_sidebar_components`, i.e. genuinely new users.
+/// silently change when a new panel ships. `default_enabled()` applies only to
+/// the no-stored-list path in `default_right_sidebar_components`, i.e.
+/// genuinely new users.
 pub fn normalize_right_sidebar_components(
     components: &[RightSidebarComponentSetting],
 ) -> Vec<RightSidebarComponentSetting> {
@@ -271,10 +269,11 @@ const NOTIFY_COOLDOWN_MINS_KEY: &str = "notify_cooldown_mins";
 const NOTIFY_FORMAT_KEY: &str = "notify_format";
 const ENABLE_BACKGROUND_COLOR_KEY: &str = "enable_background_color";
 const TEXT_BRIGHTNESS_ADJUSTMENT_KEY: &str = "text_brightness_adjustment";
-const SHOW_DASHBOARD_HEADER_KEY: &str = "show_dashboard_header";
 const SHOW_RIGHT_SIDEBAR_KEY: &str = "show_right_sidebar";
 const RIGHT_SIDEBAR_MODE_KEY: &str = "right_sidebar_mode";
 const RIGHT_SIDEBAR_COMPONENTS_KEY: &str = "right_sidebar_components";
+const SHOW_AQUARIUM_TRAY_KEY: &str = "show_aquarium_tray";
+const SHOW_PET_STRIP_KEY: &str = "show_pet_strip";
 const SHOW_ROOM_LIST_SIDEBAR_KEY: &str = "show_room_list_sidebar";
 const KEEP_COMPOSER_FOCUSED_KEY: &str = "keep_composer_focused";
 const START_WITH_MUSIC_MUTED_KEY: &str = "start_with_music_muted";
@@ -712,6 +711,23 @@ impl User {
         Ok(())
     }
 
+    /// Persist whether the aquarium tray is open so it survives reconnects.
+    pub async fn set_show_aquarium_tray(client: &Client, user_id: Uuid, shown: bool) -> Result<()> {
+        let updated = client
+            .execute(
+                "UPDATE users
+                 SET settings = settings || jsonb_build_object($1::text, $2::bool),
+                     updated = current_timestamp
+                 WHERE id = $3",
+                &[&SHOW_AQUARIUM_TRAY_KEY, &shown, &user_id],
+            )
+            .await?;
+        if updated == 0 {
+            bail!("user not found");
+        }
+        Ok(())
+    }
+
     /// Atomically mark the clubhouse first-visit tutorial as completed.
     pub async fn set_clubhouse_tutorial_done(client: &Client, user_id: Uuid) -> Result<()> {
         let updated = client
@@ -1107,13 +1123,6 @@ pub fn extract_text_brightness_adjustment(settings: &Value) -> i32 {
         .unwrap_or(0)
 }
 
-pub fn extract_show_dashboard_header(settings: &Value) -> bool {
-    settings
-        .get(SHOW_DASHBOARD_HEADER_KEY)
-        .and_then(Value::as_bool)
-        .unwrap_or(true)
-}
-
 pub fn extract_show_right_sidebar(settings: &Value) -> bool {
     // Legacy `"custom"` predates the global component list and meant "shown";
     // treat it as on.
@@ -1217,6 +1226,26 @@ pub fn extract_land_on_home(settings: &Value) -> bool {
         .get(LAND_ON_HOME_KEY)
         .and_then(Value::as_bool)
         .unwrap_or(false)
+}
+
+/// Whether the aquarium tray was open when the user last toggled it; defaults
+/// to true so the tray appears as soon as the Aquarium is unlocked, the same
+/// way `show_pet_strip` reveals the companion. Rendering is gated on the
+/// entitlement, so this stays inert for everyone who does not own one.
+pub fn extract_show_aquarium_tray(settings: &Value) -> bool {
+    settings
+        .get(SHOW_AQUARIUM_TRAY_KEY)
+        .and_then(Value::as_bool)
+        .unwrap_or(true)
+}
+
+/// Tweak: show the pet strip above the chat composer (pet owners only);
+/// defaults to true so the companion appears as soon as it is unlocked.
+pub fn extract_show_pet_strip(settings: &Value) -> bool {
+    settings
+        .get(SHOW_PET_STRIP_KEY)
+        .and_then(Value::as_bool)
+        .unwrap_or(true)
 }
 
 /// True once the user has finished (or skipped) the clubhouse first-visit
@@ -1474,12 +1503,6 @@ mod tests {
     }
 
     #[test]
-    fn extract_show_dashboard_header_defaults_to_true() {
-        let settings = json!({});
-        assert!(extract_show_dashboard_header(&settings));
-    }
-
-    #[test]
     fn extract_enable_background_color_defaults_to_true() {
         let settings = json!({});
         assert!(extract_enable_background_color(&settings));
@@ -1506,12 +1529,6 @@ mod tests {
     fn extract_enable_background_color_reads_explicit_false() {
         let settings = json!({ "enable_background_color": false });
         assert!(!extract_enable_background_color(&settings));
-    }
-
-    #[test]
-    fn extract_show_dashboard_header_reads_explicit_false() {
-        let settings = json!({ "show_dashboard_header": false });
-        assert!(!extract_show_dashboard_header(&settings));
     }
 
     #[test]
@@ -1548,14 +1565,9 @@ mod tests {
             extract_right_sidebar_components(&settings),
             default_right_sidebar_components()
         );
-        // Pet ships disabled by default; the rest ship enabled.
+        // Every panel ships enabled.
         for setting in default_right_sidebar_components() {
-            assert_eq!(
-                setting.enabled,
-                setting.component != RightSidebarComponent::Pet,
-                "{:?}",
-                setting.component
-            );
+            assert!(setting.enabled, "{:?}", setting.component);
         }
     }
 
@@ -1569,11 +1581,11 @@ mod tests {
             ]
         });
         let components = extract_right_sidebar_components(&settings);
-        // Stored order kept for known entries, unknown dropped, missing
-        // (visualizer, pet, daily) backfilled ENABLED at the end in ALL order:
-        // an existing user's stored list predates newer panels, so they should
-        // appear rather than silently stay hidden (Pet ships off only for
-        // brand-new users with no stored list).
+        // Stored order kept for known entries, unknown dropped (including the
+        // retired "pet" key), missing (visualizer, daily, activity) backfilled
+        // ENABLED at the end in ALL order: an existing user's stored list
+        // predates newer panels, so they should appear rather than silently
+        // stay hidden.
         assert_eq!(
             components,
             vec![
@@ -1590,11 +1602,11 @@ mod tests {
                     enabled: true,
                 },
                 RightSidebarComponentSetting {
-                    component: RightSidebarComponent::Pet,
+                    component: RightSidebarComponent::Daily,
                     enabled: true,
                 },
                 RightSidebarComponentSetting {
-                    component: RightSidebarComponent::Daily,
+                    component: RightSidebarComponent::Activity,
                     enabled: true,
                 },
             ]

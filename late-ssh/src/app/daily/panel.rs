@@ -1,6 +1,7 @@
-//! Right-sidebar Daily Games panel: passive, fixed height, stable chrome.
-//! Slots render dashes when empty so the panel never changes shape between
-//! states; all interaction lives in the modal (`g`).
+//! Right-sidebar Lobby panel (daily correspondence games): passive, fixed
+//! height, stable chrome. Slots render dashes when empty so the panel never
+//! changes shape between states; all interaction lives in the modal
+//! (`Ctrl+Q`).
 
 use ratatui::{
     Frame,
@@ -14,8 +15,10 @@ use crate::app::common::theme;
 
 use super::state::DailyState;
 
-/// Title + four match slots + lobby line + entries line + key hints.
-pub(crate) const DAILY_PANEL_HEIGHT: u16 = 8;
+/// Four match slots + status line (open count + entries) + key hints. The
+/// panel has no title row of its own: the sidebar's labeled separator rule
+/// (`── lobby ────`, glowing on your-turn) is the title.
+pub(crate) const DAILY_PANEL_HEIGHT: u16 = 6;
 const MATCH_SLOTS: usize = 4;
 
 /// Inputs for the panel, bundled so the pure line builder is easy to drive
@@ -24,8 +27,6 @@ pub(crate) struct DailyPanelProps {
     /// Sorted my-matches rows: your-turn first, then nearest deadline.
     pub matches: Vec<DailyPanelMatchRow>,
     pub open_count: usize,
-    /// Newest open challenge's poster, for the lobby activity line.
-    pub latest_challenger: Option<String>,
     pub lobby_glow: bool,
     pub entry_count: usize,
     pub entry_cap: usize,
@@ -55,9 +56,6 @@ pub(crate) fn draw_daily_inline(frame: &mut Frame, area: Rect, state: &DailyStat
     let props = DailyPanelProps {
         matches,
         open_count: lobby.len(),
-        latest_challenger: lobby
-            .last()
-            .and_then(|challenge| challenge.challenger_username.clone()),
         lobby_glow: state.lobby_glow(),
         entry_count: state.entry_count(),
         entry_cap: state.entry_cap(),
@@ -68,9 +66,6 @@ pub(crate) fn draw_daily_inline(frame: &mut Frame, area: Rect, state: &DailyStat
 
 fn daily_panel_lines(width: u16, props: &DailyPanelProps) -> Vec<Line<'static>> {
     let mut lines = Vec::with_capacity(DAILY_PANEL_HEIGHT as usize);
-    let any_my_turn = props.matches.iter().any(|row| row.my_turn);
-    lines.push(title_line(width, any_my_turn || props.lobby_glow));
-
     for slot in 0..MATCH_SLOTS {
         match props.matches.get(slot) {
             Some(row) => lines.push(match_line(width, row)),
@@ -78,43 +73,9 @@ fn daily_panel_lines(width: u16, props: &DailyPanelProps) -> Vec<Line<'static>> 
         }
     }
 
-    lines.push(lobby_line(width, props));
-    lines.push(entries_line(props.entry_count, props.entry_cap));
+    lines.push(status_line(width, props));
     lines.push(hints_line());
     lines
-}
-
-/// `▌ daily games ────`, amber when something wants attention.
-fn title_line(width: u16, active: bool) -> Line<'static> {
-    let (bar_style, label_style) = if active {
-        (
-            Style::default()
-                .fg(theme::AMBER_GLOW())
-                .add_modifier(Modifier::BOLD),
-            Style::default()
-                .fg(theme::AMBER())
-                .add_modifier(Modifier::BOLD),
-        )
-    } else {
-        (
-            Style::default().fg(theme::BORDER_DIM()),
-            Style::default()
-                .fg(theme::TEXT_FAINT())
-                .add_modifier(Modifier::ITALIC),
-        )
-    };
-    let label = "daily games";
-    let used = 2 + label.chars().count() + 2;
-    let dash_count = (width as usize).saturating_sub(used).max(1);
-    Line::from(vec![
-        Span::styled("▌ ", bar_style),
-        Span::styled(label.to_string(), label_style),
-        Span::raw("  "),
-        Span::styled(
-            "─".repeat(dash_count),
-            Style::default().fg(theme::BORDER_DIM()),
-        ),
-    ])
 }
 
 /// `► mira        your turn` / `  c0ld          waiting`.
@@ -163,9 +124,11 @@ fn empty_slot_line() -> Line<'static> {
     ))
 }
 
-/// `lobby: 2 open · c0ld`, glowing while there are unseen challenges.
-fn lobby_line(width: u16, props: &DailyPanelProps) -> Line<'static> {
-    let style = if props.lobby_glow {
+/// `2 open · 1/4` — open lobby challenges and your entry usage in one row.
+/// The open count glows while there are unseen challenges; the entries part
+/// stays faint so the liquidity signal carries the row.
+fn status_line(width: u16, props: &DailyPanelProps) -> Line<'static> {
+    let open_style = if props.lobby_glow {
         Style::default()
             .fg(theme::AMBER())
             .add_modifier(Modifier::BOLD)
@@ -174,30 +137,27 @@ fn lobby_line(width: u16, props: &DailyPanelProps) -> Line<'static> {
     } else {
         Style::default().fg(theme::TEXT_FAINT())
     };
-    let mut text = format!("lobby: {} open", props.open_count);
-    if let Some(name) = &props.latest_challenger {
-        text.push_str(" · ");
-        text.push_str(name);
-    }
-    Line::from(Span::styled(truncate_chars(&text, width as usize), style))
-}
-
-fn entries_line(entry_count: usize, entry_cap: usize) -> Line<'static> {
-    Line::from(Span::styled(
-        format!("entries {entry_count}/{entry_cap}"),
-        Style::default().fg(theme::TEXT_FAINT()),
-    ))
+    let open_text = format!("{} open", props.open_count);
+    let entries_text = format!(" · {}/{}", props.entry_count, props.entry_cap);
+    let budget = (width as usize).saturating_sub(open_text.chars().count());
+    Line::from(vec![
+        Span::styled(open_text, open_style),
+        Span::styled(
+            truncate_chars(&entries_text, budget),
+            Style::default().fg(theme::TEXT_FAINT()),
+        ),
+    ])
 }
 
 fn hints_line() -> Line<'static> {
     Line::from(vec![
         Span::styled(
-            "g",
+            "ctrl+q",
             Style::default()
                 .fg(theme::AMBER_DIM())
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(" games · ", Style::default().fg(theme::TEXT_FAINT())),
+        Span::styled(" · ", Style::default().fg(theme::TEXT_FAINT())),
         Span::styled(
             "/challenge",
             Style::default()
@@ -238,10 +198,9 @@ mod tests {
         DailyPanelProps {
             matches,
             open_count,
-            latest_challenger: (open_count > 0).then(|| "c0ld".to_string()),
             lobby_glow: false,
             entry_count: 1,
-            entry_cap: 5,
+            entry_cap: 4,
         }
     }
 
@@ -276,22 +235,21 @@ mod tests {
             .iter()
             .map(line_text)
             .collect();
-        assert!(texts[1].starts_with("► mira"));
-        assert!(texts[1].trim_end().ends_with("your turn"));
+        assert!(texts[0].starts_with("► mira"));
+        assert!(texts[0].trim_end().ends_with("your turn"));
+        assert_eq!(texts[1].trim_end(), "  ─");
         assert_eq!(texts[2].trim_end(), "  ─");
         assert_eq!(texts[3].trim_end(), "  ─");
-        assert_eq!(texts[4].trim_end(), "  ─");
-        assert!(texts[5].starts_with("lobby: 0 open"));
-        assert!(texts[6].starts_with("entries 1/5"));
+        assert_eq!(texts[4].trim_end(), "0 open · 1/4");
     }
 
     #[test]
-    fn lobby_line_names_latest_challenger() {
+    fn status_line_merges_open_count_and_entries() {
         let props = props_with(Vec::new(), 2);
         let texts: Vec<String> = daily_panel_lines(30, &props)
             .iter()
             .map(line_text)
             .collect();
-        assert_eq!(texts[5].trim_end(), "lobby: 2 open · c0ld");
+        assert_eq!(texts[4].trim_end(), "2 open · 1/4");
     }
 }

@@ -69,21 +69,6 @@ fn room_list_sidebar_enabled(
     }
 }
 
-fn room_top_boxes_enabled(
-    show_settings: bool,
-    draft_enabled: bool,
-    profile_enabled: bool,
-    room_selected: bool,
-) -> bool {
-    if !room_selected {
-        false
-    } else if show_settings {
-        draft_enabled
-    } else {
-        profile_enabled
-    }
-}
-
 fn dashboard_home_selected(
     lounge_room_id: Option<uuid::Uuid>,
     selected_room_id: Option<uuid::Uuid>,
@@ -236,7 +221,6 @@ struct DrawContext<'a> {
     show_bonsai_modal: bool,
     show_bonsai_v2_modal: bool,
     bonsai_care_state: &'a bonsai::care::BonsaiCareState,
-    show_cat_modal: bool,
     show_daily_modal: bool,
     daily: &'a crate::app::daily::state::DailyState,
     login_announcements: Option<&'a announcements::LoginAnnouncements>,
@@ -262,6 +246,13 @@ struct DrawContext<'a> {
     selected_radio_station: late_core::models::user::RadioStation,
     radio_now_playing: Option<&'a str>,
     afk: Option<&'a str>,
+    /// Rolling feed of recent activity events for the sidebar Activity panel.
+    activity: &'a std::collections::VecDeque<crate::app::activity::event::ActivityEvent>,
+    online_count: usize,
+    active_friend_names: &'a [String],
+    activity_scroll: u16,
+    marquee_tick: usize,
+    activity_rect_slot: Option<&'a std::cell::Cell<Option<Rect>>>,
     chat_state: &'a chat::state::ChatState,
     user_id: uuid::Uuid,
     pet_species: &'a str,
@@ -280,6 +271,9 @@ impl App {
         // Clear last-frame mouse hit-test rects so screens that don't draw
         // them this frame can't leave a stale target behind.
         self.last_dashboard_activity_rect.set(None);
+        self.last_pet_strip_pet_rect.set(None);
+        self.last_pet_strip_food_rect.set(None);
+        self.last_pet_strip_water_rect.set(None);
         self.chat.last_composer_rect.set(None);
         // `last_composer_viewport_top` is intentionally NOT reset here: it
         // replays ratatui-textarea's minimal-scroll rule, which needs the
@@ -375,13 +369,15 @@ impl App {
             shell_active_room,
             synthetic_selected,
         );
-        let room_selected = shell_active_room.is_some() && !synthetic_selected;
-        let show_room_top_boxes = room_top_boxes_enabled(
-            self.show_settings,
-            self.settings_modal_state.draft().show_dashboard_header,
-            self.profile_state.profile().show_dashboard_header,
-            room_selected,
-        );
+        // Pet strip above the composer: pet owners only, with a settings
+        // tweak (draft-aware while the modal is open, like the sidebars).
+        let show_pet_strip_setting = if self.show_settings {
+            self.settings_modal_state.draft().show_pet_strip
+        } else {
+            self.profile_state.profile().show_pet_strip
+        };
+        let pet_strip_enabled =
+            show_pet_strip_setting && self.shop_state.entitlements().has_pet_companion();
         let screen = self.screen;
         // The icecast rows render the USER'S SELECTED stream's track, not a
         // global single mount.
@@ -449,16 +445,6 @@ impl App {
                 }),
                 terminal_image_protocol: self.terminal_image_protocol,
             });
-        let multiplayer_rooms = dashboard::ui::recent_dashboard_rooms(
-            &self.rooms_snapshot,
-            &self.room_game_registry,
-            &self.dashboard_room_joins,
-            4,
-        );
-        let dashboard_cycle_secs = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|duration| duration.as_secs())
-            .unwrap_or(0);
         let dashboard_messages = shell_active_room
             .map(|room_id| self.chat.messages_for_room(room_id))
             .unwrap_or(&[]);
@@ -505,15 +491,15 @@ impl App {
                     })
             });
         let dashboard_view = dashboard::ui::DashboardRenderInput {
-            activity: &self.activity,
-            online_count,
-            active_friend_names: &active_friend_names,
-            multiplayer_rooms: &multiplayer_rooms,
-            quest_snapshot: self.quest_state.snapshot(),
-            dashboard_cycle_secs,
-            show_room_top_boxes,
             pinned_messages: self.chat.pinned_messages(),
             chat_view: chat::ui::DashboardChatView {
+                pet_strip: pet_strip_enabled.then(|| crate::app::pet::ui::PetStripView {
+                    state: &self.pet_state,
+                    pet_food_quantity: self.shop_state.pet_food_quantity(),
+                    pet_rect_slot: Some(&self.last_pet_strip_pet_rect),
+                    food_bowl_rect_slot: Some(&self.last_pet_strip_food_rect),
+                    water_bowl_rect_slot: Some(&self.last_pet_strip_water_rect),
+                }),
                 messages: dashboard_messages,
                 overlay: self.chat.overlay(),
                 image_modal,
@@ -547,7 +533,6 @@ impl App {
                 chat_badges,
                 profile_award_badges,
                 drunk_levels: &self.drunk_levels,
-                bot_username_color_active: self.shop_state.bot_username_color_active(),
                 active_room_effects: dashboard_room_effects,
                 active_poll: dashboard_active_poll,
                 inline_images: &self.chat.inline_image_cache,
@@ -556,9 +541,6 @@ impl App {
                 composer_viewport_top_slot: Some(&self.chat.last_composer_viewport_top),
                 chat_hit_slot: Some(&self.chat.last_chat_hit_layout),
             },
-            activity_scroll: self.dashboard_activity_scroll,
-            marquee_tick: self.marquee_tick,
-            activity_rect_slot: Some(&self.last_dashboard_activity_rect),
         };
         let news_view = chat::news::ui::ArticleListView {
             articles: self.chat.news.displayed_articles(),
@@ -638,6 +620,9 @@ impl App {
             None
         };
         let chat_view = chat::ui::ChatRenderInput {
+            // The pet lives in the Lounge only (DashboardChatView above);
+            // every other room and tab renders without the strip.
+            pet_strip: None,
             feeds_selected: self.chat.feeds_selected,
             feeds_processing: self.chat.feeds.processing(),
             feeds_unread_count: self.chat.feeds.unread_count(),
@@ -687,7 +672,6 @@ impl App {
             chat_badges,
             profile_award_badges,
             drunk_levels: &self.drunk_levels,
-            bot_username_color_active: self.shop_state.bot_username_color_active(),
             news_composer: self.chat.news.composer(),
             news_composing: self.chat.news.composing(),
             news_processing: self.chat.news.processing(),
@@ -805,13 +789,11 @@ impl App {
             || self.show_quit_confirm
             || self.show_mod_modal
             || self.show_hub_modal
-            || self.show_aquarium_tray
             || self.show_profile_modal
             || self.show_sheet_modal
             || self.show_poll_modal
             || self.show_bonsai_modal
             || self.show_bonsai_v2_modal
-            || self.show_cat_modal
             || self.show_daily_modal
             || login_announcements_visible
             || self.show_help
@@ -824,13 +806,11 @@ impl App {
         let suppress_new_sixel = self.show_settings
             || self.show_mod_modal
             || self.show_hub_modal
-            || self.show_aquarium_tray
             || self.show_profile_modal
             || self.show_sheet_modal
             || self.show_poll_modal
             || self.show_bonsai_modal
             || self.show_bonsai_v2_modal
-            || self.show_cat_modal
             || self.show_daily_modal
             || login_announcements_visible
             || self.show_help
@@ -959,7 +939,6 @@ impl App {
                         show_bonsai_modal: self.show_bonsai_modal,
                         show_bonsai_v2_modal: self.show_bonsai_v2_modal,
                         bonsai_care_state: &self.bonsai_care_state,
-                        show_cat_modal: self.show_cat_modal,
                         show_daily_modal: self.show_daily_modal,
                         daily: &self.daily,
                         login_announcements: if login_announcements_visible {
@@ -989,6 +968,12 @@ impl App {
                         selected_radio_station,
                         radio_now_playing: radio_now_playing.as_deref(),
                         afk: self.afk.as_deref(),
+                        activity: &self.activity,
+                        online_count,
+                        active_friend_names: &active_friend_names,
+                        activity_scroll: self.dashboard_activity_scroll,
+                        marquee_tick: self.marquee_tick,
+                        activity_rect_slot: Some(&self.last_dashboard_activity_rect),
                         chat_state: &self.chat,
                         user_id: self.user_id,
                         pet_species: &self.pet_state.species,
@@ -1145,28 +1130,19 @@ impl App {
         frame.render_widget(block, area);
         frame.render_widget(Clear, inner);
 
-        let (app_inner, aquarium_tray_area) =
-            if ctx.show_aquarium_tray && ctx.shop_state.entitlements().has_aquarium() {
-                let tray = crate::app::hub::aquarium::ui::bottom_tray_area(inner);
-                (
-                    Rect::new(
-                        inner.x,
-                        inner.y,
-                        inner.width,
-                        inner.height.saturating_sub(tray.height),
-                    ),
-                    Some(tray),
-                )
-            } else {
-                (inner, None)
-            };
+        // The aquarium tray lives inside the Lounge chat view only: it is
+        // carved from the top of the lounge's center column and competes
+        // with the chat for space. Every other screen keeps its full area.
+        let aquarium_tray_enabled =
+            ctx.show_aquarium_tray && ctx.shop_state.entitlements().has_aquarium();
+        let mut aquarium_tray_area = None;
 
         let (content_area, sidebar_area) = if ctx.show_right_sidebar {
             let main_layout =
-                Layout::horizontal([Constraint::Fill(1), Constraint::Length(24)]).split(app_inner);
+                Layout::horizontal([Constraint::Fill(1), Constraint::Length(24)]).split(inner);
             (main_layout[0], Some(main_layout[1]))
         } else {
-            (app_inner, None)
+            (inner, None)
         };
         let foreground_overlay_open = foreground_terminal_overlay_open(&ctx);
         match screen {
@@ -1182,6 +1158,13 @@ impl App {
                 } else {
                     (None, content_area)
                 };
+                let center_area = if aquarium_tray_enabled && ctx.home_selected {
+                    let (tray, rest) = crate::app::hub::aquarium::ui::carve_top_tray(center_area);
+                    aquarium_tray_area = tray;
+                    rest
+                } else {
+                    center_area
+                };
 
                 if let Some(rail_area) = rail_area {
                     chat::ui::draw_room_list_rail(frame, rail_area, &ctx.chat_view);
@@ -1189,13 +1172,6 @@ impl App {
 
                 if ctx.home_selected {
                     dashboard::ui::draw_dashboard(
-                        frame,
-                        center_area,
-                        ctx.dashboard_view,
-                        terminal_images,
-                    );
-                } else if ctx.dashboard_view.show_room_top_boxes {
-                    dashboard::ui::draw_chat_with_top_strip(
                         frame,
                         center_area,
                         ctx.dashboard_view,
@@ -1384,8 +1360,6 @@ impl App {
                     bonsai: ctx.bonsai,
                     bonsai_v2: ctx.bonsai_v2,
                     use_bonsai_v2: ctx.shop_state.dynamic_bonsai_enabled(),
-                    cat: ctx.cat,
-                    pet_available: ctx.shop_state.entitlements().has_pet_companion(),
                     audio_beat: ctx.visualizer.beat(),
                     clock_text: ctx.sidebar_clock,
                     queue_snapshot: &ctx.booth_snapshot,
@@ -1398,16 +1372,18 @@ impl App {
                     radio_now_playing: ctx.radio_now_playing,
                     afk: ctx.afk,
                     daily: ctx.daily,
+                    activity_events: ctx.activity,
+                    online_count: ctx.online_count,
+                    active_friend_names: ctx.active_friend_names,
+                    activity_scroll: ctx.activity_scroll,
+                    marquee_tick: ctx.marquee_tick,
+                    activity_rect_slot: ctx.activity_rect_slot,
                 },
             );
         }
 
         if let Some(aquarium_area) = aquarium_tray_area {
-            crate::app::hub::aquarium::ui::draw_bottom_tray(
-                frame,
-                aquarium_area,
-                ctx.aquarium_state,
-            );
+            crate::app::hub::aquarium::ui::draw_top_tray(frame, aquarium_area, ctx.aquarium_state);
         }
 
         if foreground_overlay_open {
@@ -1434,9 +1410,9 @@ impl App {
             };
             // leading space (1) + icon (2) + message + border padding (4)
             let msg_w = (banner.message.len() as u16) + 7;
-            let toast_w = msg_w.max(20).min(app_inner.width);
-            let toast_x = app_inner.x + app_inner.width.saturating_sub(toast_w);
-            let toast_area = Rect::new(toast_x, app_inner.y, toast_w, 3);
+            let toast_w = msg_w.max(20).min(inner.width);
+            let toast_x = inner.x + inner.width.saturating_sub(toast_w);
+            let toast_area = Rect::new(toast_x, inner.y, toast_w, 3);
             frame.render_widget(Clear, toast_area);
             let notif_block = Block::default()
                 .borders(Borders::ALL)
@@ -1446,9 +1422,7 @@ impl App {
             draw_banner(frame, notif_inner, &banner);
         }
 
-        if !ctx.show_cat_modal {
-            crate::app::pet::ui::draw_roaming_pet(frame, app_inner, ctx.cat);
-        }
+        crate::app::pet::ui::draw_roaming_pet(frame, inner, ctx.cat);
 
         if ctx.show_settings {
             settings_modal::ui::draw(frame, inner, ctx.settings_modal_state);
@@ -1504,10 +1478,6 @@ impl App {
                 ctx.bonsai_v2,
                 ctx.visualizer.beat(),
             );
-        }
-
-        if ctx.show_cat_modal {
-            crate::app::pet::modal_ui::draw(frame, ctx.cat);
         }
 
         if ctx.show_daily_modal {
@@ -1573,12 +1543,10 @@ fn foreground_terminal_overlay_open(ctx: &DrawContext<'_>) -> bool {
         || ctx.show_quit_confirm
         || ctx.show_mod_modal
         || ctx.show_hub_modal
-        || ctx.show_aquarium_tray
         || ctx.show_profile_modal
         || ctx.show_poll_modal
         || ctx.show_bonsai_modal
         || ctx.show_bonsai_v2_modal
-        || ctx.show_cat_modal
         || ctx.login_announcements.is_some()
         || ctx.show_help
         || ctx.show_ultimate_modal
@@ -1968,7 +1936,7 @@ fn app_frame_help_hint_title(hint_style: HelpHintStyle) -> Line<'static> {
     let hints = [
         ("Settings", ctrl_hint("O", use_caret)),
         ("Hub", ctrl_hint("G", use_caret)),
-        ("Aqua", ctrl_hint("Q", use_caret)),
+        ("Lobby", ctrl_hint("Q", use_caret)),
         ("Guide", "?"),
     ];
 
@@ -2053,8 +2021,7 @@ mod tests {
     use super::{
         HelpHintStyle, app_frame_bottom_titles, app_frame_help_hint_title, app_frame_sponsor_title,
         dashboard_home_selected, line_width, resolve_right_sidebar_enabled,
-        room_list_sidebar_enabled, room_top_boxes_enabled, sidebar_enabled, sponsor_line,
-        status_hud_title,
+        room_list_sidebar_enabled, sidebar_enabled, sponsor_line, status_hud_title,
     };
     use crate::app::common::primitives::Screen;
     use late_core::models::user::RightSidebarMode;
@@ -2129,24 +2096,6 @@ mod tests {
     }
 
     #[test]
-    fn room_top_boxes_enabled_prefers_settings_draft_while_modal_is_open() {
-        assert!(!room_top_boxes_enabled(true, false, true, true));
-        assert!(room_top_boxes_enabled(true, true, false, true));
-    }
-
-    #[test]
-    fn room_top_boxes_enabled_uses_saved_profile_when_modal_is_closed() {
-        assert!(room_top_boxes_enabled(false, false, true, true));
-        assert!(!room_top_boxes_enabled(false, true, false, true));
-    }
-
-    #[test]
-    fn room_top_boxes_enabled_is_off_for_synthetic_home_entries() {
-        assert!(!room_top_boxes_enabled(true, true, true, false));
-        assert!(!room_top_boxes_enabled(false, true, true, false));
-    }
-
-    #[test]
     fn dashboard_home_selected_for_lounge_room_without_synthetic_entry() {
         let lounge = Uuid::from_u128(1);
         assert!(dashboard_home_selected(Some(lounge), Some(lounge), false));
@@ -2216,10 +2165,7 @@ mod tests {
     #[test]
     fn help_hint_title_lists_guide_last() {
         let help = app_frame_help_hint_title(HelpHintStyle::DottedCtrl);
-        assert_eq!(
-            line_text(&help),
-            " Settings Ctrl+O · Hub Ctrl+G · Aqua Ctrl+Q · Guide ? "
-        );
+        assert_eq!(line_text(&help), " Settings Ctrl+O · Hub Ctrl+G · Guide ? ");
     }
 
     #[test]
@@ -2227,11 +2173,8 @@ mod tests {
         let dotted = app_frame_help_hint_title(HelpHintStyle::DottedCtrl);
         let spaced = app_frame_help_hint_title(HelpHintStyle::SpacedCtrl);
         let caret = app_frame_help_hint_title(HelpHintStyle::SpacedCaret);
-        assert_eq!(
-            line_text(&spaced),
-            " Settings Ctrl+O  Hub Ctrl+G  Aqua Ctrl+Q  Guide ? "
-        );
-        assert_eq!(line_text(&caret), " Settings ^O  Hub ^G  Aqua ^Q  Guide ? ");
+        assert_eq!(line_text(&spaced), " Settings Ctrl+O  Hub Ctrl+G  Guide ? ");
+        assert_eq!(line_text(&caret), " Settings ^O  Hub ^G  Guide ? ");
 
         let (help, sponsor) = app_frame_bottom_titles((line_width(&dotted) + 2) as u16);
         assert_eq!(line_text(&help), line_text(&dotted));
