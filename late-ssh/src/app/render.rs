@@ -1999,15 +1999,16 @@ fn status_hud_title(
         return None;
     }
     let mut spans = Vec::new();
-    if let Some(balance) = balance {
+    if unread > 0 {
+        let noun = if unread == 1 { "mention" } else { "mentions" };
         spans.push(Span::styled(
-            format!(" {balance}"),
+            format!(" {unread}"),
             Style::default()
-                .fg(theme::AMBER())
+                .fg(theme::MENTION())
                 .add_modifier(Modifier::BOLD),
         ));
         spans.push(Span::styled(
-            " chips ",
+            format!(" unread {noun} "),
             Style::default().fg(theme::TEXT_MUTED()),
         ));
     }
@@ -2022,19 +2023,18 @@ fn status_hud_title(
                 .add_modifier(Modifier::BOLD),
         ));
     }
-    if unread > 0 {
+    if let Some(balance) = balance {
         if !spans.is_empty() {
             spans.push(Span::styled("|", Style::default().fg(theme::BORDER_DIM())));
         }
-        let noun = if unread == 1 { "mention" } else { "mentions" };
         spans.push(Span::styled(
-            format!(" {unread}"),
+            format!(" {balance}"),
             Style::default()
-                .fg(theme::MENTION())
+                .fg(theme::AMBER())
                 .add_modifier(Modifier::BOLD),
         ));
         spans.push(Span::styled(
-            format!(" unread {noun} "),
+            " chips ",
             Style::default().fg(theme::TEXT_MUTED()),
         ));
     }
@@ -2160,11 +2160,11 @@ mod tests {
         let line =
             status_hud_title(None, 2, Some(" mic #lounge [muted] ")).expect("status should render");
         let text: String = line.iter().map(|s| s.content.as_ref()).collect();
-        assert_eq!(text, " mic #lounge [muted] | 2 unread mentions ");
+        assert_eq!(text, " 2 unread mentions | mic #lounge [muted] ");
     }
 
     #[test]
-    fn status_hud_title_renders_balance_left_of_mentions() {
+    fn status_hud_title_renders_balance_right_of_mentions() {
         use ratatui::layout::Alignment;
 
         let only = status_hud_title(Some(1_500), 0, None).expect("balance should render alone");
@@ -2177,7 +2177,7 @@ mod tests {
         let text: String = combined.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(
             text,
-            " 1500 chips | mic #lounge [muted] | 2 unread mentions "
+            " 2 unread mentions | mic #lounge [muted] | 1500 chips "
         );
     }
 
