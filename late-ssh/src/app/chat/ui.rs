@@ -40,7 +40,10 @@ use super::state::{
 use super::ui_text::{AuthorTint, reaction_label, wrap_chat_entry_to_lines};
 
 const REACTION_PICKER_KEYS: [i16; 9] = [1, 2, 3, 4, 5, 6, 7, 8, 9];
-const CHAT_COMPOSER_GAP_HEIGHT: u16 = 1;
+/// The gap between messages and composer: a blank breather row on top so the
+/// ticker doesn't read as one more chat line, then the ticker row itself
+/// hugging the composer. Two rows, always present, so the chrome never moves.
+const CHAT_COMPOSER_GAP_HEIGHT: u16 = 2;
 const AUTHOR_BADGE_SEPARATOR: &str = " ";
 const FRIEND_BADGE: &str = "★";
 const AFK_BADGE: &str = "🌙";
@@ -539,9 +542,9 @@ fn split_chat_and_composer(area: Rect, composer_height: u16) -> (Rect, Rect) {
     (messages, composer)
 }
 
-/// Vertical layout for a chat surface: messages fill, then a 1-row gap (the
-/// activity ticker slot), then an optional pet strip (0 rows when absent)
-/// directly above the composer.
+/// Vertical layout for a chat surface: messages fill, then the composer gap
+/// (a blank row plus the activity ticker slot), then an optional pet strip
+/// (0 rows when absent) directly above the composer.
 fn split_chat_pet_strip_and_composer(
     area: Rect,
     composer_height: u16,
@@ -557,12 +560,13 @@ fn split_chat_pet_strip_and_composer(
     (layout[0], layout[1], layout[2], layout[3])
 }
 
-/// The one-row #lounge activity ticker rendered in the gap between messages
-/// and composer. The queue packs left to right, newest first — each event as
-/// `text (5m)` with faint `·` separators — until the row is full; whatever
-/// doesn't fit is simply not shown (the queue is sized to outfill the row).
-/// The row itself always exists (it doubles as the composer gap), so the
-/// chrome never moves; an empty queue just leaves it blank.
+/// The one-row #lounge activity ticker rendered in the composer gap. The
+/// queue packs left to right, newest first — each event as `text (5m)` with
+/// faint `·` separators — until the row is full; whatever doesn't fit is
+/// simply not shown (the queue is sized to outfill the row). It paints the
+/// bottom row of the gap so a blank breather sits between it and the last
+/// chat message, and the ticker hugs the composer below. The gap always
+/// exists, so the chrome never moves; an empty queue just leaves it blank.
 fn draw_activity_ticker(
     frame: &mut Frame,
     area: Rect,
@@ -571,6 +575,12 @@ fn draw_activity_ticker(
     if entries.is_empty() || area.is_empty() {
         return;
     }
+    // Paint only the bottom row of the gap; the row(s) above stay blank.
+    let area = Rect {
+        y: area.bottom().saturating_sub(1),
+        height: 1,
+        ..area
+    };
     let text_style = Style::default()
         .fg(theme::TEXT_DIM())
         .add_modifier(Modifier::ITALIC);
