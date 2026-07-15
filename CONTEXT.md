@@ -3,7 +3,7 @@
 ## Metadata
 - Domain: late.sh - Command-Line Clubhouse for Computer People
 - Primary audience: LLM agents working on this codebase, human contributors
-- Last updated: 2026-07-15 (backtick workspace cycle now includes unfinished Arcade daily puzzles — today's boards with at least one player move, not yet solved — after seated house tables (`arcade/workspace.rs::ArcadeStop`); Rubik's Cube daily progress now persists across sessions in `rubiks_cube_games` (migration 113); also merged main's 24h username effects — see `late-ssh/src/app/hub/CONTEXT.md`)
+- Last updated: 2026-07-15 (chat message search: `?query` mode in the global Ctrl+/ modal, `/search` composer command, and Mentions Enter opening a single-message preview; migration 114 adds a `pg_trgm` GIN index on `chat_messages.body` — see `late-ssh/src/app/chat/CONTEXT.md`)
 - Status: Active
 - Stability note: Sections marked `[STABLE]` should change rarely. Sections marked `[VOLATILE]` are expected to change often.
 
@@ -26,6 +26,7 @@ This file is the primary working context for the entire late.sh project.
 - Remove obsolete notes
 - After any crash/incident investigation, add a dated entry to the Incident log (§10.5) — that is the one place a running log belongs
 - Read `late-ssh/assets/splash_tips/new_and_returning_users_tip_pool.json` and `late-ssh/assets/splash_tips/returning_users_tip_pool.json` to keep splash tips aligned with any feature/key changes
+- On any bigger feature/keybinding/screen change, update `late-ssh/src/app/help_modal/data.rs` — it backs the in-app global guide (`?`), the `bot_app_context()` string fed to @bot (the full guide, since explaining features in depth is his job), and the much smaller `bartender_app_context()` fed to @bartender (navigation only — @bartender points deeper questions at @bot rather than answering them himself). @graybeard gets neither; he only riffs on chat history. Stale help lines there mislead users and the bots alike.
 
 ### Freshness target
 - Re-review this file regularly (every 2 weeks) to prevent context drift.
@@ -1228,7 +1229,8 @@ When modifying any keybinding, update **all** of the following:
 
 ## Dependency Notes
 
-- **Ratatui 0.30.1 update blocker:** `ratatui 0.30.1` is currently not a clean bump for `late-ssh`. It pulls `ratatui-widgets 0.3.1`, where `Block` contains `Shadow -> Arc<dyn CellEffect>` and upstream defines `CellEffect` as only `fmt::Debug`. Because `ratatui_textarea::TextArea<'static>` stores an optional `Block`, this makes `App` non-`Send`, which breaks `russh::server::Handler + Send` through `ClientHandler.app: Option<Arc<TokioMutex<App>>>`. A local vendored `ratatui-widgets` patch with `pub trait CellEffect: fmt::Debug + Send + Sync` made `cargo check -p late-ssh` and `cargo test -p late-ssh --lib` pass, but the actual one-line fix required vendoring ~1.5 MB / ~36k lines, so do not carry it just for the patch release. Before updating past `ratatui 0.30.0`, check whether upstream Ratatui has added `Send + Sync` to `CellEffect` or otherwise made `Block`/`TextArea` `Send` again.
+- **Ratatui pinned at 0.30.2 / ratatui-widgets 0.3.2 / ratatui-textarea 0.9.2.** The old 0.30.1 `App: !Send` blocker is resolved: upstream `CellEffect` is now `fmt::Debug + Send + Sync + UnwindSafe + RefUnwindSafe`, so `Block`/`TextArea<'static>` are `Send` again and the russh `Handler + Send` bound holds.
+- **Never call `Terminal::clear()` on the SSH backend.** Since ratatui-core 0.1.1 (ratatui 0.30.1) `clear()` snapshots the cursor via `crossterm::cursor::position()`, which reads the controlling tty — impossible on our write-only `CrosstermBackend<SharedBuffer>` sink, so it errors *before* resetting the back buffer and the next `draw()` emits an empty diff (blank frame). `App::force_full_repaint` (`app/state.rs`) instead emits the clear escape by hand (`terminal::Clear(ClearType::All)`) and resets both diff buffers with two cursor-free `terminal.swap_buffers()` calls. Normal `draw()` is unaffected — our `Viewport::Fixed` never queries the cursor. Re-check this on any ratatui bump.
 
 ---
 

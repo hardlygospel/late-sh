@@ -176,6 +176,22 @@ pub fn bot_app_context() -> String {
     out
 }
 
+/// Trimmed app context for @bartender: navigation only, not the full guide.
+/// He is house furniture, not the help desk — @bot owns explaining features
+/// in depth, so anything past "which screen / which key" should route there.
+pub fn bartender_app_context() -> String {
+    "APP CONTEXT (basic navigation):\n\
+    - Screens: 0 Clubhouse (this room, the Late Lounge tavern), 1 Home (chat + music), 2 The Arcade (single-player games), 3 Games hub (Lateania, NetHack, Green Dragon, dopewars, Rebels), 4 Artboard (shared ASCII canvas), 5 Directory (Profiles, Projects, Pinstar), 6 World Cup (live scores).\n\
+    - Tab / Shift+Tab cycles screens; number keys 0-6 jump straight to one.\n\
+    - Ctrl+O opens Settings from anywhere. Ctrl+G opens Hub (Quests, Shop, Leaderboard, Events). Ctrl+Q opens the Lobby (daily correspondence games plus the fixed house tables: Poker, Blackjack, Asterion, Tron).\n\
+    - Ctrl+/ opens jump search across rooms and DMs; typing ?query searches messages.\n\
+    - Home's room rail also holds RSS, News, Voice, Mentions, and Discover.\n\
+    - In the Clubhouse: arrows/hjkl walk, i talks (it floats over your head and lands in #lounge), w waves, x dances, Enter interacts with a landmark.\n\
+    - Pressing ? anywhere opens the full in-app guide, with a tab per topic.\n\
+    - For anything past basic directions — commands, game rules, settings, IRC, account stuff — don't guess: tell the patron to go ask @bot, that's what he's for.\n"
+        .to_string()
+}
+
 fn is_restricted_bot_context_line(line: &str) -> bool {
     let line = line.to_lowercase();
     [
@@ -331,6 +347,7 @@ pub fn chat_help_lines(keep_composer_focused: bool) -> Vec<String> {
         "  /upload <url>      download and upload an image URL (see Images)",
         "  /ignore [@user]    ignore a user, or list ignored users",
         "  /unignore [@user]  unignore a user, or list ignored users",
+        "  /search [query]    search messages (opens the Ctrl+/ modal in ? mode)",
         "",
         "Global chat keys",
         "  Ctrl+O             open your settings modal anywhere",
@@ -338,7 +355,7 @@ pub fn chat_help_lines(keep_composer_focused: bool) -> Vec<String> {
         "  /aquarium          toggle the Aquarium in the Lounge after unlocking it in Shop",
         "  /aquarium feed     feed your Aquarium with bought Aquarium Food",
         "  /pet               toggle the pet strip in the Lounge",
-        "  Ctrl+/             search and jump to a room, DM, or Home entry",
+        "  Ctrl+/             jump to a room or DM; type ?query to search messages",
         "  Ctrl+Q             open / close the Lobby (daily games + house tables)",
         "  ?                  open this guide; Pair and terminal-specific tabs live here",
         "",
@@ -357,7 +374,7 @@ pub fn chat_help_lines(keep_composer_focused: bool) -> Vec<String> {
         "  g                  jump to a reply's original even if it has an image",
         "  r                  reply to selected message",
         "  e                  edit selected message",
-        "  d                  delete selected message",
+        "  dd                 delete selected message (press d twice)",
         "  c                  copy selected message to clipboard",
         "  Ctrl+P             pin / unpin selected message",
         "",
@@ -527,7 +544,7 @@ fn social_help_lines() -> Vec<String> {
         "  User-targeted notification feed for @user mentions.",
         "  Selecting Mentions marks it read.",
         "  j / k or ↑ / ↓   navigate notifications",
-        "  Enter             jump to referenced room/message when possible",
+        "  Enter             preview the mention with surrounding messages; Enter again jumps",
         "  Rules             actor excluded; DMs notify participants; private rooms notify members",
         "  Game-room chat does not create Mentions feed notifications.",
         "",
@@ -798,7 +815,7 @@ fn overview_lines() -> Vec<String> {
         "  Ctrl+Q            open / close the Lobby (daily games + house tables)",
         "  /aquarium         toggle the Aquarium in the Lounge after unlocking it in Shop",
         "  /aquarium feed    feed your Aquarium with bought Aquarium Food",
-        "  Ctrl+/            search and jump to a room, DM, or synthetic Home entry",
+        "  Ctrl+/            jump to a room, DM, or Home entry; ?query searches messages",
         "  ?                 open this guide; Pair and terminal-specific tabs live here",
         "  w                 open Bonsai Care when not composing",
         "  /pet              toggle the pet strip in the Lounge",
@@ -838,6 +855,15 @@ fn overview_lines() -> Vec<String> {
         "  Ctrl+Backspace    delete query word",
         "  Enter             jump to selected destination",
         "  Esc               close",
+        "",
+        "Message search (inside the jump modal)",
+        "  ?query            search messages in every room you're in",
+        "  ?#room query      search one room; ?@user query searches a DM",
+        "  ↑/↓               browse hits; the pane below shows the message with",
+        "                    4 messages of surrounding conversation",
+        "  Enter             jump to the hit's room and select it when loaded",
+        "  Ctrl+Y            copy the selected hit's text",
+        "  /search [query]   open message search from the composer",
         "",
         "Home room shortcuts",
         "  Ctrl+Q            open the Lobby (daily games + house tables)",
