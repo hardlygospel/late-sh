@@ -2867,6 +2867,8 @@ fn handle_dock_drag(app: &mut App, screen: Screen, mouse: MouseEvent) -> bool {
         MouseEventKind::Drag if app.dock_resize.is_some() => {}
         MouseEventKind::Up if app.dock_resize.is_some() => {
             app.dock_resize = None;
+            // The resize settled: persist the new layout so it survives reconnects.
+            app.persist_dock_layout();
             return true;
         }
         _ => return false,

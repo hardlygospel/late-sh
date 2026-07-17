@@ -1240,11 +1240,16 @@ impl App {
         let mut aquarium_tray_area = None;
 
         let (content_area, sidebar_area) = if ctx.show_right_sidebar {
-            let main_layout = Layout::horizontal([
-                Constraint::Fill(1),
-                Constraint::Length(ctx.dock_right_width),
-            ])
-            .split(inner);
+            // Clamp against the live width so a layout persisted on a wider
+            // terminal can never squeeze the centre away. On a normal width the
+            // default 24 clamps to 24, unchanged from the old fixed size.
+            let sidebar_width = crate::app::common::dock::DockLayout::clamp_width(
+                inner.width,
+                ctx.dock_right_width,
+            );
+            let main_layout =
+                Layout::horizontal([Constraint::Fill(1), Constraint::Length(sidebar_width)])
+                    .split(inner);
             (main_layout[0], Some(main_layout[1]))
         } else {
             (inner, None)
@@ -1253,11 +1258,13 @@ impl App {
         match screen {
             Screen::Dashboard => {
                 let (rail_area, center_area) = if ctx.show_room_list_sidebar {
-                    let split = Layout::horizontal([
-                        Constraint::Length(ctx.dock_left_width),
-                        Constraint::Fill(1),
-                    ])
-                    .split(content_area);
+                    let rail_width = crate::app::common::dock::DockLayout::clamp_width(
+                        content_area.width,
+                        ctx.dock_left_width,
+                    );
+                    let split =
+                        Layout::horizontal([Constraint::Length(rail_width), Constraint::Fill(1)])
+                            .split(content_area);
                     (Some(split[0]), split[1])
                 } else {
                     (None, content_area)

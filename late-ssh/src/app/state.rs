@@ -263,6 +263,9 @@ pub struct SessionConfig {
     pub clubhouse_tutorial_done: bool,
     /// Whether the aquarium tray was open when the user last toggled it.
     pub show_aquarium_tray: bool,
+    /// The user's saved home dock layout as an opaque JSON blob, or `None` to
+    /// start from the default. Parsed by `DockLayout::from_value`.
+    pub home_dock_layout: Option<serde_json::Value>,
     pub afk_users: crate::state::AfkUsers,
     pub username_directory: Option<crate::usernames::UsernameDirectory>,
     /// Live 24h username effects, shared process-wide (snapshot-swap; see
@@ -1084,7 +1087,11 @@ impl App {
             last_pet_strip_pet_rect: std::cell::Cell::new(None),
             last_pet_strip_food_rect: std::cell::Cell::new(None),
             last_pet_strip_water_rect: std::cell::Cell::new(None),
-            dock_layout: crate::app::common::dock::DockLayout::default(),
+            dock_layout: config
+                .home_dock_layout
+                .as_ref()
+                .map(crate::app::common::dock::DockLayout::from_value)
+                .unwrap_or_default(),
             dock_resize: None,
             last_dock_rail_rect: std::cell::Cell::new(None),
             last_dock_center_rect: std::cell::Cell::new(None),
@@ -2014,6 +2021,14 @@ impl App {
         self.profile_state
             .service()
             .set_show_aquarium_tray(self.user_id, self.show_aquarium_tray);
+    }
+
+    /// Persist the current home dock layout (fire-and-forget) so a resized or
+    /// re-docked home survives reconnects.
+    pub(crate) fn persist_dock_layout(&self) {
+        self.profile_state
+            .service()
+            .set_home_dock_layout(self.user_id, self.dock_layout.to_value());
     }
 
     /// Open the profile modal for a user, closing the sheet modal that shares

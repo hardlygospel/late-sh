@@ -365,6 +365,111 @@ impl DockLayout {
             .map(|(p, _)| *p);
         Some(DropZone { side, before })
     }
+
+    /// Serialize to a JSON object for per-user persistence. Panels are keyed by
+    /// their stable `key()` and sides by `"left"`/`"right"`, so the blob
+    /// survives enum reordering or renames of the Rust variants.
+    pub fn to_value(&self) -> serde_json::Value {
+        let slots: Vec<serde_json::Value> = self
+            .slots
+            .iter()
+            .map(|s| {
+                serde_json::json!({
+                    "panel": s.panel.key(),
+                    "side": s.side.key(),
+                    "weight": s.weight,
+                    "enabled": s.enabled,
+                })
+            })
+            .collect();
+        serde_json::json!({
+            "left_width": self.left_width,
+            "right_width": self.right_width,
+            "slots": slots,
+        })
+    }
+
+    /// Rebuild a layout from a persisted blob, falling back to the default for
+    /// anything missing or malformed. Unknown panel keys are skipped and any
+    /// panel absent from the blob (e.g. one added in a newer build) is appended
+    /// from the default, so a saved layout can never hide a panel. Widths are
+    /// coarsely bounded here; `frame()` still clamps them to the live area.
+    pub fn from_value(value: &serde_json::Value) -> DockLayout {
+        let default = DockLayout::default();
+        let Some(obj) = value.as_object() else {
+            return default;
+        };
+        let width = |key: &str, fallback: u16| -> u16 {
+            obj.get(key)
+                .and_then(serde_json::Value::as_u64)
+                .map(|n| n.clamp(1, 500) as u16)
+                .unwrap_or(fallback)
+        };
+        let mut slots: Vec<PanelSlot> = Vec::new();
+        if let Some(arr) = obj.get("slots").and_then(|v| v.as_array()) {
+            for entry in arr {
+                let Some(panel) = entry
+                    .get("panel")
+                    .and_then(|v| v.as_str())
+                    .and_then(DockPanel::from_key)
+                else {
+                    continue;
+                };
+                if slots.iter().any(|s| s.panel == panel) {
+                    continue; // ignore a duplicate panel in the blob
+                }
+                let side = entry
+                    .get("side")
+                    .and_then(|v| v.as_str())
+                    .and_then(DockSide::from_key)
+                    .unwrap_or(DockSide::Right);
+                let weight = entry
+                    .get("weight")
+                    .and_then(serde_json::Value::as_u64)
+                    .map(|n| (n as u16).max(1))
+                    .unwrap_or(1);
+                let enabled = entry
+                    .get("enabled")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(true);
+                slots.push(PanelSlot {
+                    panel,
+                    side,
+                    weight,
+                    enabled,
+                });
+            }
+        }
+        // Append any panel the blob didn't mention, from the default layout.
+        for def in &default.slots {
+            if !slots.iter().any(|s| s.panel == def.panel) {
+                slots.push(*def);
+            }
+        }
+        DockLayout {
+            slots,
+            left_width: width("left_width", default.left_width),
+            right_width: width("right_width", default.right_width),
+        }
+    }
+}
+
+impl DockSide {
+    /// Stable persistence key (never rename).
+    pub fn key(self) -> &'static str {
+        match self {
+            DockSide::Left => "left",
+            DockSide::Right => "right",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<DockSide> {
+        match key {
+            "left" => Some(DockSide::Left),
+            "right" => Some(DockSide::Right),
+            _ => None,
+        }
+    }
 }
 
 /// Shrink two side widths so the centre keeps at least `MIN_COL_WIDTH`. Trims the
@@ -505,6 +610,64 @@ mod tests {
         d.resize(Divider::Right, a.right() - 90, a.width);
         assert_eq!(d.right_width, 30);
         assert_eq!(d.frame(a).right.unwrap().width, 30);
+    }
+
+    #[test]
+    fn layout_survives_a_json_round_trip() {
+        // A moved-and-resized layout should reload exactly.
+        let mut d = DockLayout::default();
+        d.dock(
+            DockPanel::Bonsai,
+            DropZone {
+                side: DockSide::Left,
+                before: Some(DockPanel::RoomList),
+            },
+        );
+        d.resize(Divider::Left, 30, 120);
+        d.resize(Divider::Right, 18, 120);
+        let reloaded = DockLayout::from_value(&d.to_value());
+        assert_eq!(reloaded, d);
+    }
+
+    #[test]
+    fn from_value_is_robust_to_junk() {
+        // Non-object -> default.
+        assert_eq!(
+            DockLayout::from_value(&serde_json::json!("nope")),
+            DockLayout::default()
+        );
+        // Unknown panel keys are skipped; missing panels are filled from the
+        // default so none is ever hidden, and a bogus width falls back.
+        let v = serde_json::json!({
+            "left_width": "wide",
+            "slots": [
+                { "panel": "made_up", "side": "left", "weight": 2, "enabled": true },
+                { "panel": "bonsai", "side": "left", "weight": 9, "enabled": false },
+            ],
+        });
+        let d = DockLayout::from_value(&v);
+        assert_eq!(
+            d.left_width,
+            DockLayout::default().left_width,
+            "bad width -> default"
+        );
+        assert!(!d.slots.iter().any(|s| s.panel.key() == "made_up"));
+        // Every real panel is present exactly once.
+        for p in DockPanel::ALL {
+            assert_eq!(
+                d.slots.iter().filter(|s| s.panel == p).count(),
+                1,
+                "{p:?} present once"
+            );
+        }
+        // The bonsai kept the blob's overrides.
+        let bonsai = d
+            .slots
+            .iter()
+            .find(|s| s.panel == DockPanel::Bonsai)
+            .unwrap();
+        assert_eq!(bonsai.side, DockSide::Left);
+        assert!(!bonsai.enabled);
     }
 
     #[test]
