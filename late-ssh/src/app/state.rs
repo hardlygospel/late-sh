@@ -406,6 +406,17 @@ pub struct App {
     pub(crate) last_pet_strip_pet_rect: std::cell::Cell<Option<Rect>>,
     pub(crate) last_pet_strip_food_rect: std::cell::Cell<Option<Rect>>,
     pub(crate) last_pet_strip_water_rect: std::cell::Cell<Option<Rect>>,
+    /// Dockable home layout: the column widths the home screen renders from.
+    /// Defaults to today's fixed layout, so rendering is unchanged until the
+    /// user drags a divider. Session-only for now (not yet persisted).
+    pub(crate) dock_layout: crate::app::common::dock::DockLayout,
+    /// The column divider currently being drag-resized, if any.
+    pub(crate) dock_resize: Option<crate::app::common::dock::Divider>,
+    /// Home column rects from the last frame, for divider hit-testing. Reset
+    /// each frame; only set on the Dashboard where the dock layout drives them.
+    pub(crate) last_dock_rail_rect: std::cell::Cell<Option<Rect>>,
+    pub(crate) last_dock_center_rect: std::cell::Cell<Option<Rect>>,
+    pub(crate) last_dock_sidebar_rect: std::cell::Cell<Option<Rect>>,
     pub(crate) audio: crate::app::audio::state::AudioState,
     pub(crate) voice: crate::app::voice::state::VoiceState,
     pub(crate) voice_service: crate::app::voice::svc::VoiceService,
@@ -1073,6 +1084,11 @@ impl App {
             last_pet_strip_pet_rect: std::cell::Cell::new(None),
             last_pet_strip_food_rect: std::cell::Cell::new(None),
             last_pet_strip_water_rect: std::cell::Cell::new(None),
+            dock_layout: crate::app::common::dock::DockLayout::default(),
+            dock_resize: None,
+            last_dock_rail_rect: std::cell::Cell::new(None),
+            last_dock_center_rect: std::cell::Cell::new(None),
+            last_dock_sidebar_rect: std::cell::Cell::new(None),
             audio: crate::app::audio::state::AudioState::new(config.audio_service, config.user_id),
             voice: crate::app::voice::state::VoiceState::new(config.voice_service),
             voice_service,

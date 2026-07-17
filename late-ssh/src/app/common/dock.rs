@@ -482,6 +482,32 @@ mod tests {
     }
 
     #[test]
+    fn dragging_a_divider_resizes_its_column() {
+        // Mirrors the home mouse path: hit-test a divider, then resize the
+        // column to follow the pointer (the arithmetic in `handle_dock_drag`).
+        let mut d = DockLayout::default();
+        let a = area(); // 120 x 40 at origin
+        let f = d.frame(a);
+
+        // The left divider sits at the rail's right edge; grab it there.
+        let l = f.left.unwrap();
+        assert_eq!(
+            d.hit(&f, l.right() - 1, 5),
+            Some(Hit::Divider(Divider::Left))
+        );
+        // Drag it out to x = 30 (left edge is 0): the rail follows the pointer.
+        d.resize(Divider::Left, 30 - a.x, a.width);
+        assert_eq!(d.left_width, 30);
+        assert_eq!(d.frame(a).left.unwrap().width, 30);
+
+        // The right divider widens the sidebar as the pointer moves inward: a
+        // pointer at x = 90 leaves a 30-wide sidebar (120 - 90).
+        d.resize(Divider::Right, a.right() - 90, a.width);
+        assert_eq!(d.right_width, 30);
+        assert_eq!(d.frame(a).right.unwrap().width, 30);
+    }
+
+    #[test]
     fn panel_keys_round_trip() {
         for p in DockPanel::ALL {
             assert_eq!(DockPanel::from_key(p.key()), Some(p));
