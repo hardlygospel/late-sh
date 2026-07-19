@@ -21,9 +21,9 @@ pub enum ProxyStatus {
 
 const SETUP_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// The late-nethack host is a trusted, late.sh-owned service reached over the
+/// The late-dcss host is a trusted, late.sh-owned service reached over the
 /// internal network. We accept any server host key and rely on the derived
-/// shared-secret credentials for auth (same policy as the rebels door).
+/// shared-secret credentials for auth (same policy as the nethack door).
 struct AcceptAnyHostKey;
 
 impl Handler for AcceptAnyHostKey {
@@ -39,14 +39,14 @@ enum OutboundCommand {
     Resize { cols: u16, rows: u16 },
 }
 
-/// Per-session proxy to the late-nethack SSH host. Owns a background task that
+/// Per-session proxy to the late-dcss SSH host. Owns a background task that
 /// runs the bidirectional bridge; the foreground holds a shared vt100 screen and
 /// a status flag updated by that task.
 ///
-/// This is the network-proxied twin of the rebels door (`RebelsProxy`): same
-/// vt100 model and transport, but the target is late.sh's own NetHack host and
-/// the SSH username carries the account's arcade handle as the `-u` playname.
-pub struct NethackProcess {
+/// This is the twin of the nethack door's `NethackProcess`: same vt100 model and
+/// transport, but the target is late.sh's DCSS host and the SSH username carries
+/// the account's arcade handle as the `-name` playname.
+pub struct DcssProcess {
     cmd_tx: mpsc::Sender<OutboundCommand>,
     task: JoinHandle<()>,
     parser: Arc<Mutex<vt100::Parser>>,
@@ -58,11 +58,9 @@ pub struct ProcessConfig {
     pub port: u16,
     pub secret: String,
     /// The account's arcade handle, sent as the SSH username; the host
-    /// re-sanitizes it and passes it as NetHack's `-u`, which keys the
-    /// save/bones. Claimed once and immutable
-    /// (`late_core::models::arcade_handle`), so a late.sh rename can never
-    /// orphan a character. (Bonus over the old hash scheme: bones/ghost names
-    /// are now readable.)
+    /// re-sanitizes it and passes it as crawl's `-name`, which keys the save.
+    /// Claimed once and immutable (`late_core::models::arcade_handle`), so a
+    /// late.sh rename can never orphan a character.
     pub playname: String,
     pub cols: u16,
     pub rows: u16,
@@ -72,7 +70,7 @@ pub struct ProcessConfig {
     pub repaint: Option<Arc<RenderSignal>>,
 }
 
-impl NethackProcess {
+impl DcssProcess {
     pub fn spawn(cfg: ProcessConfig) -> Self {
         let (cmd_tx, cmd_rx) = mpsc::channel::<OutboundCommand>(256);
         let parser = Arc::new(Mutex::new(vt100::Parser::new(cfg.rows, cfg.cols, 0)));
@@ -86,7 +84,7 @@ impl NethackProcess {
         let exit_repaint = cfg.repaint.clone();
         let task = tokio::spawn(async move {
             if let Err(e) = run_bridge(cfg, cmd_rx, task_parser, task_status.clone()).await {
-                tracing::warn!(error = ?e, "nethack proxy bridge ended with error");
+                tracing::warn!(error = ?e, "dcss proxy bridge ended with error");
             }
             *task_status.lock().expect("status mutex") = ProxyStatus::Closed;
             if let Some(sig) = &exit_repaint {
@@ -134,7 +132,7 @@ impl NethackProcess {
     }
 }
 
-impl Drop for NethackProcess {
+impl Drop for DcssProcess {
     fn drop(&mut self) {
         self.task.abort();
     }
@@ -156,11 +154,11 @@ async fn run_bridge(
         client::connect(config, (cfg.host.as_str(), cfg.port), AcceptAnyHostKey),
     )
     .await
-    .context("nethack outbound connect timed out")?
+    .context("dcss outbound connect timed out")?
     .with_context(|| format!("connecting to {}:{}", cfg.host, cfg.port))?;
 
     // Authenticate with the shared-secret-derived key; the username carries the
-    // account's arcade handle (the host uses it as `-u`).
+    // account's arcade handle (the host uses it as `-name`).
     let key =
         russh::keys::PrivateKeyWithHashAlg::new(Arc::new(derive_client_key(&cfg.secret)), None);
     let auth = timeout(
@@ -168,26 +166,26 @@ async fn run_bridge(
         session.authenticate_publickey(cfg.playname.as_str(), key),
     )
     .await
-    .context("nethack outbound authenticate_publickey timed out")?
+    .context("dcss outbound authenticate_publickey timed out")?
     .context("outbound authenticate_publickey failed")?;
     if !auth.success() {
-        anyhow::bail!("nethack host rejected derived credentials");
+        anyhow::bail!("dcss host rejected derived credentials");
     }
 
     let mut outbound = timeout(SETUP_TIMEOUT, session.channel_open_session())
         .await
-        .context("nethack outbound channel_open_session timed out")?
+        .context("dcss outbound channel_open_session timed out")?
         .context("channel_open_session failed")?;
     timeout(
         SETUP_TIMEOUT,
         outbound.request_pty(true, &cfg.term, cfg.cols as u32, cfg.rows as u32, 0, 0, &[]),
     )
     .await
-    .context("nethack outbound request_pty timed out")?
+    .context("dcss outbound request_pty timed out")?
     .context("request_pty failed")?;
     timeout(SETUP_TIMEOUT, outbound.request_shell(true))
         .await
-        .context("nethack outbound request_shell timed out")?
+        .context("dcss outbound request_shell timed out")?
         .context("request_shell failed")?;
 
     *status.lock().expect("status mutex") = ProxyStatus::Running;
@@ -231,3 +229,4 @@ async fn run_bridge(
         .await;
     Ok(())
 }
+
