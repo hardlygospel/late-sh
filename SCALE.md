@@ -262,6 +262,8 @@ LLM agents must not run the full Rust test/lint gates in this repo; the human ow
 
 ### Enable `pg_stat_statements`
 
+Done: `pg_stat_statements` is preloaded and installed in prod (used during the 2026-07-22 investigation; query recipes live in CONTEXT.md §10.2.2). The original plan is kept below for reference.
+
 Apply the prepared CNPG Postgres settings:
 
 - `pg_stat_statements.max = "10000"`
@@ -347,7 +349,7 @@ Suggested shape:
 - PgBouncer: DB connection smoothing
 - Postgres: durable state
 - Audio: dedicated scalable streaming path, not one small Icecast pod on the app node
-- Observability: dashboard for active sessions, per-pod session count, render frames/sec, frame drops, DB pool wait, Postgres top SQL, p95 input latency
+- Observability: dashboard for active sessions, per-pod session count, render frames/sec, frame drops, DB pool wait, Postgres top SQL, p95 input latency. Partially exists as of 2026-07-22: `late_ssh_sessions_active`, `late_ssh_render_frame_drops_total` (a flat ~909/min per stalled session is the stalled-client signature), and `late_ssh_render_stall_{skips,disconnects}_total`; traces in VictoriaTraces (Jaeger API on `monitoring/victoriatraces:10428`)
 
 The goal is not "1000 pods". The goal is "N SSH pods, each owning a shard of sessions".
 
@@ -384,22 +386,21 @@ Stop conditions:
 
 ## Current Go/No-Go For HN
 
-Current state is safer than before the investigation:
+Updated 2026-07-22, after an actual HN front-page surge (peak about 100 sessions):
 
-- SSH cap is explicitly 1000
-- service-ssh has more CPU headroom
-- Postgres has more memory headroom
-- Icecast can accept 300 clients
-- web stream proxy no longer loops through public audio ingress
-- two major chat snapshot queries were optimized in source; deploy required before production uses them
+What held:
 
-Residual risk remains:
+- SSH cap 1000, chat query rewrites live, Postgres a non-factor (about 200 millicores at 80 TUI sessions)
+- Memory: OOM root cause found (stalled-client output buffering in russh's uncapped queue) and guarded in code; limit raised to 8 GiB; pair-WS surface capped and bounded
+- `pg_stat_statements` and traces available for live diagnosis
+
+Residual risk:
 
 - single-node cluster
 - single `service-ssh` pod for real session ownership
-- render loop still likely dominates at high concurrency
-- no `pg_stat_statements` yet
+- CPU is the measured ceiling: about 59 millicores per session means the 8-core node saturates around 100-110 concurrent sessions; past that, renders and DB tasks degrade gracefully rather than crash
 - no PgBouncer yet
 - no horizontal `service-ssh` sharding yet
+- no adaptive rendering yet (design drafted above)
 
-For a post that may bring about 100 active users, this is much better. For 1000 active terminal users, the required next projects are adaptive rendering and shardable `service-ssh`.
+For posts that bring about 100 active users, current state survives, proven in production. For 1000 active terminal users, the required next projects remain adaptive rendering and shardable `service-ssh`, in that order: adaptive rendering multiplies per-node capacity before sharding multiplies nodes.
