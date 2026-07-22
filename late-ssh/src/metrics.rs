@@ -20,7 +20,7 @@ mod inner {
         metrics::{Counter, UpDownCounter},
     };
 
-    use super::{ActivityGame, RenderReason};
+    use super::ActivityGame;
 
     fn meter() -> opentelemetry::metrics::Meter {
         global::meter("late-ssh")
