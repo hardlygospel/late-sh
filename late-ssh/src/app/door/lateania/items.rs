@@ -2545,8 +2545,23 @@ const GENERATED_SLOTS: [(Slot, &str); 8] = [
 ];
 
 /// The deepest tier a shop will ever stock: Kaelmyr's last tier, the deepest
-/// full eight-slot set that exists. Past it only the Archipelago's finds climb,
-/// and those cover four slots, so there is nothing to sell.
+/// gear on the *road*.
+///
+/// It is no longer the deepest gear that exists. `archipelago_items` is a full
+/// eight-slot set twenty tiers past it (t=61..80, Legendary at every tier).
+/// This ceiling used to be justified by there being nothing above t=60 worth
+/// selling, and that stopped being true the moment that catalog landed. The
+/// ceiling stays anyway, now for a design reason rather than an availability
+/// one: the Archipelago is off-road, grants no title, and is where the best
+/// gear is *earned*. `PlayerState::market_title_cap` already makes that
+/// structural, since it ladders on the three gate titles and there is no
+/// Archipelago title to unlock a fourth rung, so raising this alone would
+/// stock nothing.
+///
+/// Raising it means teaching `market_tier_base` the Archipelago catalog too.
+/// Today its last arm assumes every tier past the Reaches is Kaelmyr's, and a
+/// tier of 70 would index 30 blocks into a 20-block catalog and hand back
+/// whatever ids follow it. This constant is the only thing holding that shut.
 pub const MARKET_TIER_MAX: i32 = (FRONTIER_TIERS + REACHES_TIERS + KAELMYR_TIERS) as i32;
 
 /// The generated-catalog id for `slot` at a 1-based market tier
