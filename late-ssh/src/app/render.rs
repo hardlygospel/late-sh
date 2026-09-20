@@ -2315,7 +2315,8 @@ fn app_frame_title(screen: Screen, ctx: &DrawContext<'_>) -> Line<'static> {
                 ))
             || (*tab_screen == Screen::Dashboard
                 && matches!(screen, Screen::DailyMatch | Screen::HouseTable))
-            || (*tab_screen == Screen::Clubhouse && screen == Screen::City);
+            || (*tab_screen == Screen::Clubhouse
+                && matches!(screen, Screen::City | Screen::Nightcap));
         let style = if active {
             Style::default()
                 .fg(theme::BG_SELECTION())

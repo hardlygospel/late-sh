@@ -39,6 +39,17 @@ pub struct SeatView {
     pub drinks: u32,
 }
 
+/// What a seat press did. The caller says it out loud, so a press that
+/// bounces off an occupied stool is never silent: in a six-stool room that
+/// is the common case, and no feedback there reads as a dropped key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SeatChange {
+    SatDown,
+    StoodUp,
+    Taken,
+    OutOfRange,
+}
+
 #[derive(Clone)]
 pub struct SharedSeats {
     inner: Arc<Mutex<SeatsInner>>,
@@ -57,27 +68,47 @@ impl SharedSeats {
         }
     }
 
-    /// Drop anyone no longer in the live human roster (disconnected).
-    pub fn sync(&self, roster_ids: &[Uuid]) {
+    /// Reconcile the stools against the live human roster: drop anyone who
+    /// disconnected, and relabel everyone still here. The roster owns the
+    /// name (root `CONTEXT.md` §8.1: no per-feature username caches for seat
+    /// labels), so a rename lands on the stool instead of sitting stale
+    /// until its owner stands up and sits back down.
+    pub fn sync(&self, roster: &[(Uuid, String)]) {
         let mut inner = self.inner.lock_recover();
         for slot in inner.seats.iter_mut() {
-            let stale = slot
-                .as_ref()
-                .is_some_and(|occupant| !roster_ids.contains(&occupant.user_id));
-            if stale {
-                *slot = None;
+            let Some(seated) = slot.as_ref().map(|occupant| occupant.user_id) else {
+                continue;
+            };
+            match roster.iter().find(|(id, _)| *id == seated) {
+                Some((_, username)) => {
+                    if let Some(occupant) = slot.as_mut() {
+                        occupant.username.clone_from(username);
+                    }
+                }
+                None => *slot = None,
             }
         }
     }
 
+    /// Give up this user's stool, if they hold one. A seat is only held
+    /// while its owner is in the room: leaving the screen is a departure,
+    /// not a reservation. Without this a stool is a durable claim that lives
+    /// until the session disconnects, and six of them close the bar for
+    /// everyone else.
+    pub fn vacate(&self, user_id: Uuid) {
+        let mut inner = self.inner.lock_recover();
+        if let Some(seat) = inner.seat_of(user_id) {
+            inner.seats[seat] = None;
+        }
+    }
+
     /// Sit in the given seat if it's free, standing up from any other seat
-    /// first. Pressing your own seat again stands you up — the whole
+    /// first. Pressing your own seat again stands you up: the whole
     /// interaction model is "press a seat's number to sit there or leave
-    /// it." Returns `false` only when the seat is out of range or already
-    /// taken by someone else.
-    pub fn toggle_seat(&self, user_id: Uuid, username: &str, seat: usize) -> bool {
+    /// it."
+    pub fn toggle_seat(&self, user_id: Uuid, username: &str, seat: usize) -> SeatChange {
         if seat >= SEAT_COUNT {
-            return false;
+            return SeatChange::OutOfRange;
         }
         let mut inner = self.inner.lock_recover();
         if inner.seats[seat]
@@ -85,10 +116,10 @@ impl SharedSeats {
             .is_some_and(|o| o.user_id == user_id)
         {
             inner.seats[seat] = None;
-            return true;
+            return SeatChange::StoodUp;
         }
         if inner.seats[seat].is_some() {
-            return false;
+            return SeatChange::Taken;
         }
         if let Some(current) = inner.seat_of(user_id) {
             inner.seats[current] = None;
@@ -98,7 +129,7 @@ impl SharedSeats {
             username: username.to_string(),
             drinks: 0,
         });
-        true
+        SeatChange::SatDown
     }
 
     pub fn seat_of(&self, user_id: Uuid) -> Option<usize> {

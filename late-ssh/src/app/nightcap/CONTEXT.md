@@ -29,12 +29,24 @@ comparison — this module intentionally does not try to match its scale.
   `SharedSeats`, threaded into each session through
   `SessionConfig.nightcap_lobby` (same pattern as `clubhouse_lobby`).
   Single-replica by design, same constraint as the Clubhouse.
-- Unlike the Clubhouse, nobody holds a seat by default — you are only in the
+- Unlike the Clubhouse, nobody holds a seat by default: you are only in the
   room's shared state once you press a seat number. `App::tick_nightcap`
   (called from `tick.rs` alongside `tick_clubhouse`) only evicts
   disconnected occupants; it never auto-seats anyone.
-- Pressing your own occupied seat's number again stands you up. Pressing an
-  occupied seat someone else holds does nothing.
+- **A stool is held only while its owner is in the room.** Leaving the
+  screen by any route (Esc, `0`, Tab, a page digit) runs
+  `State::leave_screen` from `App::set_screen`, which vacates the seat. This
+  is load-bearing, not tidiness: `SharedSeats::sync` evicts only users who
+  dropped out of `active_users`, which means disconnected, so a seat kept
+  across a screen change would outlive the visit and six of them would close
+  the six-stool bar for the rest of those sessions.
+- Pressing your own occupied seat's number again stands you up. Pressing a
+  stool someone else holds is refused with `SeatChange::Taken`, which the
+  footer prints; a bounced press is the one this room sees most, and
+  silence there reads as a dropped keypress.
+- Occupant names are re-read from the roster on every `sync`, never cached
+  at sit time, so a rename reaches the stool. Root `CONTEXT.md` §8.1 names
+  seat labels as the case not to build a per-feature username cache for.
 
 ## 4. Drinks are cosmetic (deliberately, for now)
 
@@ -55,7 +67,11 @@ comparison — this module intentionally does not try to match its scale.
 
 ## 5. Testing
 
-- `lobby_test.rs`: seat toggle/move/collision, drink counting, roster
-  eviction — pure `SharedSeats` behavior, no `App` fixture needed.
-- No `state_test.rs`/`ui_test.rs`/`input_test.rs` yet: those need an `App`
-  fixture (see `test_helpers.rs`) this module didn't need to touch directly.
+- `lobby_test.rs`: seat toggle/move/collision, vacating, drink counting,
+  roster eviction and relabelling. Pure `SharedSeats` behavior.
+- `state_test.rs`: the seat is given back on `leave_screen`, a taken stool
+  reports itself, and the `ROSTER_REFRESH_TICKS` cadence plus the
+  `enter_screen` override. `State::new` takes an `Option<SharedSeats>`, a
+  `Uuid` and a name, so neither file needs an `App` fixture.
+- No `ui_test.rs`/`input_test.rs`: both are thin enough that the behavior
+  they carry is asserted a layer down.

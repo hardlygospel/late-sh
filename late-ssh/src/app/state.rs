@@ -2290,6 +2290,16 @@ impl App {
             self.house.close();
         }
 
+        // A Nightcap stool is held only while its owner is in the room.
+        // There are six of them and sitting is the room's one verb, so a
+        // seat kept across a screen change is a claim that outlives the
+        // visit: six such claims close the bar for the rest of those
+        // sessions. `SharedSeats::sync` cannot clean this up, since it only
+        // evicts users who left `active_users`, which means disconnected.
+        if self.screen == Screen::Nightcap && screen != Screen::Nightcap {
+            self.nightcap.leave_screen();
+        }
+
         if self.screen == Screen::Scratchpad && screen != Screen::Scratchpad {
             // Dropping `scratchpad` here (rather than an explicit
             // `leave_scratchpad` method) runs `ScratchpadState`'s `Drop`
@@ -2735,17 +2745,17 @@ impl App {
         }
 
         if self.nightcap.roster_refresh_due() {
-            let mut roster_ids = Vec::new();
+            let mut roster = Vec::new();
             if let Some(active_users) = &self.active_users {
                 let active_users = active_users.lock_recover();
                 for (user_id, user) in active_users.iter() {
                     if user.fingerprint.is_none() {
                         continue; // ghost bots don't hold a seat
                     }
-                    roster_ids.push(*user_id);
+                    roster.push((*user_id, user.username.clone()));
                 }
             }
-            self.nightcap.refresh_roster(&roster_ids);
+            self.nightcap.refresh_roster(&roster);
         }
 
         self.nightcap.refresh_snapshot();

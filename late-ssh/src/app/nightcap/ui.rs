@@ -54,8 +54,7 @@ pub fn draw(frame: &mut Frame, area: Rect, view: NightcapView<'_>) {
 fn draw_seats(frame: &mut Frame, area: Rect, state: &State) {
     let snapshot = state.snapshot();
     let my_seat = state.my_seat();
-    let rows: Vec<Constraint> =
-        std::iter::repeat_n(Constraint::Length(1), SEAT_COUNT).collect();
+    let rows: Vec<Constraint> = std::iter::repeat_n(Constraint::Length(1), SEAT_COUNT).collect();
     let layout = Layout::vertical(rows).split(area);
 
     for (idx, slot) in snapshot.iter().enumerate() {
@@ -77,19 +76,28 @@ fn draw_seats(frame: &mut Frame, area: Rect, state: &State) {
                 };
                 let drinks = "●".repeat(occupant.drinks.min(5) as usize);
                 let mut spans = vec![
-                    Span::styled(format!("{seat_num} "), Style::default().fg(theme::TEXT_DIM())),
+                    Span::styled(
+                        format!("{seat_num} "),
+                        Style::default().fg(theme::TEXT_DIM()),
+                    ),
                     Span::styled("●", style),
                     Span::raw(" "),
                     Span::styled(name, style),
                 ];
                 if !drinks.is_empty() {
                     spans.push(Span::raw("  "));
-                    spans.push(Span::styled(drinks, Style::default().fg(theme::AMBER_DIM())));
+                    spans.push(Span::styled(
+                        drinks,
+                        Style::default().fg(theme::AMBER_DIM()),
+                    ));
                 }
                 Line::from(spans)
             }
             None => Line::from(vec![
-                Span::styled(format!("{seat_num} "), Style::default().fg(theme::TEXT_DIM())),
+                Span::styled(
+                    format!("{seat_num} "),
+                    Style::default().fg(theme::TEXT_DIM()),
+                ),
                 Span::styled("○", Style::default().fg(theme::BORDER_DIM())),
                 Span::styled(
                     " empty stool",
@@ -117,7 +125,10 @@ fn draw_footer(frame: &mut Frame, area: Rect, state: &State) {
             Span::styled("d", Style::default().fg(theme::AMBER_DIM())),
             Span::styled(" order a drink  ", Style::default().fg(theme::TEXT_DIM())),
             Span::styled("Esc", Style::default().fg(theme::AMBER_DIM())),
-            Span::styled(" back to the clubhouse", Style::default().fg(theme::TEXT_DIM())),
+            Span::styled(
+                " back to the clubhouse",
+                Style::default().fg(theme::TEXT_DIM()),
+            ),
         ],
     };
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
