@@ -99,10 +99,11 @@ impl App {
             }
         }
         // Heartbeats are a liveness no-op (matched below); a heartbeat-only
-        // drain must not pay a frame. Viz frames are dropped outright: the
-        // eq is synthetic and the pipeline removal is a tracked follow-up
-        // (SCALE.md), the variant survives only so old CLIs still
-        // sending frames keep a working socket.
+        // drain must not pay a frame. Viz frames only update the eq's
+        // spectrum: the eq repaints on the anim_half edge it already pays
+        // while visible, so ~15 frames a second never buy extra paints.
+        let now = Instant::now();
+        self.audio.expire_spectrum(now);
         if messages
             .iter()
             .any(|m| !matches!(m, SessionMessage::Heartbeat | SessionMessage::Viz(_)))
@@ -165,6 +166,13 @@ impl App {
             // heartbeat keeps the ambience moving at half the hot cost, and
             // every discrete change (input, chat bubbles, door events)
             // still lands within 132ms of its tick.
+            changed = true;
+        }
+        if self.screen == Screen::City && anim_half {
+            // Rain, neon, steam and the screen's static ride the same
+            // ~7.5fps ambience edge as the clubhouse; the runner's steps
+            // are input-driven.
+            self.city.tick(self.marquee_tick as u64);
             changed = true;
         }
 
@@ -292,6 +300,7 @@ impl App {
         changed |= self.drain_voice_join_results();
         changed |= self.tick_stream();
         changed |= self.tick_crown();
+        changed |= self.bonsai.tick();
         changed |= self.tick_pot();
         // News state is ticked inside chat.tick()
         let profile_tick = self.profile_state.tick();
@@ -338,7 +347,7 @@ impl App {
         for msg in messages {
             match msg {
                 SessionMessage::Heartbeat => {}
-                SessionMessage::Viz(_) => {}
+                SessionMessage::Viz(frame) => self.audio.apply_viz_frame(&frame, now),
                 SessionMessage::ClipboardImage { data } => {
                     let Some(upload) = self.chat.take_pending_clipboard_image_upload() else {
                         tracing::warn!("ignoring unsolicited paired clipboard image");
@@ -774,6 +783,15 @@ impl App {
             if self.runner_looks_rx.has_changed().unwrap_or(false) {
                 self.runner_looks = self.runner_looks_rx.borrow_and_update().clone();
                 self.chat_ctx_epoch += 1;
+                // Leaving #deadchannel on one session closes the undercity
+                // for every session the runner has open, here and on every
+                // other replica. This edge is the only place in the process
+                // that can notice: the gate on `0` guards the descent, not
+                // the standing there.
+                if self.screen == Screen::City && !self.is_runner() {
+                    self.set_screen(Screen::Clubhouse);
+                    changed = true;
+                }
             }
             // The pot resolves on the same edge, and for the same reason:
             // the panel reads owned values, and only a change the viewer can
@@ -814,10 +832,25 @@ impl App {
                     changed = true;
                 }
             }
-            let active_friend_names = self.chat.active_friend_names();
-            if active_friend_names != self.active_friend_names {
-                self.active_friend_names = active_friend_names;
+            let active_friends = self.chat.active_friends();
+            if active_friends != self.active_friends {
+                self.active_friend_names = active_friends
+                    .iter()
+                    .map(|friend| friend.username.clone())
+                    .collect();
+                self.active_friends = active_friends;
                 changed = true;
+            }
+            // Mentions load only when asked for. An Inbox tile on the page
+            // asks whenever the unread count moves, so a new mention lands.
+            if self.screen == crate::app::common::primitives::Screen::Zen
+                && self.zen.shows(crate::app::zen::state::TileKind::Inbox)
+            {
+                let unread = self.chat.notifications.unread_count();
+                if self.zen_inbox_listed_unread != Some(unread) {
+                    self.chat.notifications.list();
+                    self.zen_inbox_listed_unread = Some(unread);
+                }
             }
             // The username directory swaps its Arc on every real change, so
             // pointer equality is the change signal for the row cache epoch.
@@ -921,7 +954,7 @@ impl App {
             // A Bonsai Decay Shield purchase is picked up here, but the tree
             // has no in-session decay simulation to refresh, so it only
             // matters from the next login's elapsed-day catch-up onward.
-            self.bonsai_state.decay_protection = self.shop_state.active_bonsai_decay_protection();
+            self.bonsai.tree.decay_protection = self.shop_state.active_bonsai_decay_protection();
             // An Aquarium Shield purchase takes effect at once: the fish
             // stop being hungry and the water clears on the next quarter edge.
             self.aquarium_care
@@ -1041,24 +1074,19 @@ impl App {
                         self.pet_state.note_loss(Instant::now());
                         None
                     }
-                    // The session's own watering cleared the DB chip gate:
-                    // this is the one place that may claim the payout, since
-                    // another session or an in-flight save can make the
-                    // in-memory state disagree with the row.
-                    ActivityKind::BonsaiWatered if user_id == self.user_id => {
-                        self.bonsai_state.message = Some(format!(
-                            "Watered (+{} chips)",
-                            crate::app::bonsai::svc::WATER_CHIP_BONUS
-                        ));
-                        changed = true;
-                        None
-                    }
                     // Same story for the tank: the DB gate said this
                     // session's feed was the first of the day.
                     ActivityKind::AquariumFed if user_id == self.user_id => {
                         Some(crate::app::common::primitives::Banner::success(&format!(
                             "Fed the tank (+{} chips)",
                             crate::app::hub::aquarium::svc::FEED_CHIP_BONUS
+                        )))
+                    }
+                    // And for the pet: the first pet of the day paid.
+                    ActivityKind::PetPetted if user_id == self.user_id => {
+                        Some(crate::app::common::primitives::Banner::success(&format!(
+                            "Petted (+{} chips)",
+                            crate::app::pet::svc::PET_CHIP_BONUS
                         )))
                     }
                     // The streak's fry: the sim learns which species to draw
@@ -1253,10 +1281,15 @@ impl App {
     /// (RenderSignal) interrupt the sleep regardless.
     pub fn wake_hint(&self) -> Duration {
         let hot = self.show_splash
+            || self.haunt.breakthrough_playing()
             || self.last_input_at.elapsed() < POST_INPUT_HOT_WINDOW
             || self.ultimate_state.has_active_effect()
             || self.screen == Screen::HouseTable
-            || (self.screen == Screen::Arcade && self.is_playing_game);
+            || (self.screen == Screen::Arcade && self.is_playing_game)
+            // A pool shot is the daily board's only animation: while one is
+            // rolling it wants the same 15fps as a live table, and the moment
+            // it settles the board goes back to being event-driven.
+            || (self.screen == Screen::DailyMatch && self.daily.pool_is_animating());
         if hot {
             return HOT_TICK;
         }
@@ -1264,9 +1297,13 @@ impl App {
         // pet's clocks are wall-synced (PetState::tick takes marquee_tick),
         // so the pet box rides the half tier it paints on. The
         // bonsai care modal and the profile hero sway on the same edge as
-        // the sidebar, which always carries the eq strip and that sway.
+        // the sidebar, which always carries the eq strip and that sway. A
+        // Zen music or visualizer tile paints its eq on that edge too; left
+        // to the aquarium's quarter tier it drops to ~3.8fps.
         if self.screen == Screen::Clubhouse
+            || self.screen == Screen::City
             || self.right_sidebar_visible()
+            || (self.screen == Screen::Zen && self.zen.shows_equalizer())
             || self.last_pet_frame.get().is_some()
             || self.show_bonsai_modal
             || (self.show_profile_modal && self.profile_modal_state.bonsai().is_some())
@@ -1291,7 +1328,8 @@ impl App {
     }
 
     /// A paired client is playing and unmuted: the same reading the Zen
-    /// page's equalizer paints (`EqState::Playing`), handed to the pet.
+    /// page's equalizer paints as moving (`EqState::Live` or `Ambient`),
+    /// handed to the pet.
     fn music_playing(&self) -> bool {
         match self.paired_client_state() {
             None => false,

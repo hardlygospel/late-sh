@@ -593,11 +593,11 @@ pub fn handle(app: &mut App, data: &[u8]) {
                 _ => {}
             }
         }
-        // First contact: an armed whisper holds the door, so input goes to
-        // the machine instead of skipping (`app/deadchannel/haunt`).
+        // First contact: an armed whisper holds the door, so input is
+        // swallowed instead of skipping (`app/deadchannel/haunt`).
         if !saw_terminal_reply
             && !data.is_empty()
-            && crate::app::deadchannel::haunt::svc::note_splash_input(app)
+            && crate::app::deadchannel::haunt::svc::swallows_splash_input(app)
         {
             return;
         }
@@ -997,7 +997,8 @@ fn handle_parsed_input_inner(app: &mut App, event: ParsedInput) {
                     return;
                 }
                 let from_dashboard = ctx.screen == Screen::Dashboard;
-                if let Some(b) = app.chat.submit_composer(true, from_dashboard) {
+                let commands = chat::state::ComposerCommands::for_screen(ctx.screen);
+                if let Some(b) = app.chat.submit_composer(true, commands) {
                     app.banner = Some(b);
                 }
                 chat::input::handle_post_submit_requests(app, from_dashboard);
@@ -1372,6 +1373,7 @@ fn handle_games_hub_input(app: &mut App, event: &ParsedInput) -> bool {
                     // the only place that can reach this arm, and it never
                     // will, but the match still has to be exhaustive.
                     HubGame::Lateania
+                    | HubGame::Minecraft
                     | HubGame::Rebels
                     | HubGame::Nethack
                     | HubGame::Dcss
@@ -1395,8 +1397,19 @@ fn handle_games_hub_input(app: &mut App, event: &ParsedInput) -> bool {
     }
 
     match event {
-        ParsedInput::Byte(b'\r' | b'\n') => {
+        ParsedInput::Byte(b'\r') => {
             launch_games_hub_selection(app, selected);
+            true
+        }
+        // Scroll the selected landing: Ctrl+K / Ctrl+Up up, Ctrl+J / Ctrl+Down
+        // down. Ctrl+J is a bare LF, which is why Enter above matches CR only
+        // (the same CR/LF split the chat composer relies on).
+        ParsedInput::Byte(0x0B) | ParsedInput::CtrlArrow(b'A') => {
+            app.games_hub_state.scroll_up();
+            true
+        }
+        ParsedInput::Byte(b'\n') | ParsedInput::CtrlArrow(b'B') => {
+            app.games_hub_state.scroll_down();
             true
         }
         // Right: l, j, or Right/Down arrow.
@@ -1464,6 +1477,9 @@ fn launch_games_hub_selection(app: &mut App, game: crate::app::door::hub::state:
             // characters to play is no longer a foregone conclusion.
             app.set_screen(Screen::Lateania);
         }
+        // Played from the Minecraft client, not the terminal: the landing
+        // says how to connect and there is nothing to launch.
+        HubGame::Minecraft => {}
         HubGame::Rebels => {
             if !app.rebels_enabled {
                 app.banner = Some(crate::app::common::primitives::Banner::error(
@@ -1593,6 +1609,10 @@ fn handle_dedicated_screen_input(app: &mut App, ctx: InputContext, event: &Parse
 
     if ctx.screen == Screen::Nightcap {
         return crate::app::nightcap::input::handle_event(app, event);
+    }
+
+    if ctx.screen == Screen::City {
+        return crate::app::deadchannel::city::input::handle_event(app, event);
     }
 
     if ctx.screen == Screen::Zen {
@@ -2353,6 +2373,12 @@ fn dispatch_escape(app: &mut App) {
         crate::app::door::darkroom::screen::GAME.handle_key(app, 0x1B);
         return;
     }
+    // Esc in the city closes an open shop panel or steps back from the
+    // ledge; on the street it means nothing (the wire is the way out).
+    if ctx.screen == Screen::City && (app.city.panel().is_some() || app.city.at_ledge()) {
+        app.city.dismiss();
+        return;
+    }
     // Esc from the Games hub closes the rc config modal, cancels a pending
     // reset prompt, and otherwise drops back to Home.
     if ctx.screen == Screen::Games {
@@ -3086,6 +3112,8 @@ fn handle_notifications_hud_click(app: &mut App, mouse: MouseEvent) -> bool {
     }
 
     app.pending_chat_profile_open = None;
+    app.chat.reset_composer();
+    app.chat.clear_message_selection();
     app.set_screen(Screen::Dashboard);
     app.chat.select_notifications();
     true
@@ -3152,6 +3180,8 @@ fn handle_arrow_for_screen(app: &mut App, screen: Screen, key: u8) -> bool {
         Screen::Clubhouse => false,
         // Nightcap has no arrow use (seats are picked by number key).
         Screen::Nightcap => false,
+        // City arrows walk the runner in handle_dedicated_screen_input.
+        Screen::City => false,
         // Daily board arrows are consumed in handle_dedicated_screen_input.
         Screen::DailyMatch => false,
         // House table arrows are consumed in handle_dedicated_screen_input.
@@ -3408,14 +3438,15 @@ pub(crate) fn open_shop_modal_globally(app: &mut App) {
     app.show_hub_modal = true;
 }
 
-/// A click on the pet: it purrs for a bit. The box only draws for owners,
-/// so the click can only land on an unlocked pet; the gate is belt and
-/// braces.
+/// A click on the pet: it purrs for a bit, and the first click of the day
+/// pays (`PetState::pet`). The box only draws for owners, so the click can
+/// only land on an unlocked pet; the service checks ownership again.
 pub(crate) fn pet_the_pet_globally(app: &mut App) {
     if !app.shop_state.entitlements().has_pet_companion() {
         return;
     }
-    app.pet_state.note_petted(std::time::Instant::now());
+    app.pet_state
+        .pet(std::time::Instant::now(), chrono::Utc::now().date_naive());
 }
 
 /// The tank's free daily meal, from any surface that shows it. Ownership is
@@ -3682,14 +3713,17 @@ fn open_zen_globally(app: &mut App) {
 /// Hands the page back to wherever Ctrl+F was pressed. A session that
 /// landed on Zen has nowhere to go back to, so it walks into the Clubhouse,
 /// the front door. `set_screen` closes the tile picker and forgets the
-/// return page.
+/// return page. Handing back a game screen is not going into the games from
+/// Zen, so the backtick base `set_screen` records is put back.
 fn close_zen(app: &mut App) {
     let back = match app.zen_return_screen {
         Some(screen) => screen,
         None => Screen::Clubhouse,
     };
     reset_composers_for_page_change(app);
+    let base = app.workspace_base;
     app.set_screen(back);
+    app.workspace_base = base;
     app.chat.clear_message_selection();
 }
 
@@ -3733,7 +3767,7 @@ fn handle_global_key(app: &mut App, ctx: InputContext, byte: u8) -> bool {
     // While the reaction leader is armed, every digit belongs to it: `1`-`9`
     // are the quick reactions and `0` opens the custom icon picker. Let them
     // fall through to the chat message-action handler instead of the global
-    // page switch (`0` now lands on the Clubhouse, `1`-`7` on other pages).
+    // page switch (`0` now lands on the Clubhouse, `1`-`6` on other pages).
     if matches!(
         byte,
         b'0' | b'1' | b'2' | b'3' | b'4' | b'5' | b'6' | b'7' | b'8' | b'9'
@@ -3937,9 +3971,21 @@ fn handle_global_key(app: &mut App, ctx: InputContext, byte: u8) -> bool {
             app.set_screen(Screen::Leaderboard);
             true
         }
+        // `0` is the clubhouse. Pressed again on the clubhouse it goes
+        // down to the undercity (deadchannel's street), runners only;
+        // from the undercity it comes back up. A descent always lands on
+        // the street: a panel or the ledge left open on the way up does
+        // not carry over.
         b'0' if !artboard_blocks_page_switch => {
             reset_composers_for_page_change(app);
-            app.set_screen(Screen::Clubhouse);
+            let target = match ctx.screen {
+                Screen::Clubhouse if app.is_runner() => {
+                    app.city.dismiss();
+                    Screen::City
+                }
+                _ => Screen::Clubhouse,
+            };
+            app.set_screen(target);
             true
         }
         b'\t' if artboard_rail_takes_tab(app, ctx.screen) => {
@@ -4078,6 +4124,9 @@ fn dispatch_screen_key(app: &mut App, screen: Screen, byte: u8) {
         Screen::Nightcap => {
             // Nightcap keys (seat picks, drink, Esc) are handled in
             // handle_dedicated_screen_input; no-op here.
+        }
+        Screen::City => {
+            // City keys are handled in handle_dedicated_screen_input.
         }
         Screen::DailyMatch => {
             // Daily board keys are handled in handle_dedicated_screen_input.

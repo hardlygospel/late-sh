@@ -1,9 +1,14 @@
 # =============================================================================
 # Minecraft: Paper server with GriefPrevention
 # =============================================================================
-# A friends server on the node's public port 25565 (the client default, so
-# players type `late.sh` with no DNS work; `late.sh` already resolves to the
-# node). The port is a pod hostPort, NOT an ingress-nginx TCP passthrough
+# A friends server on agent-1's public port 25565, the client default. It is
+# pinned to agent-1 (defaults.tf, node placement) so the Java heap and a
+# growing world stay off the node that serves SSH sessions. `late.sh` and the
+# `*.late.sh` wildcard resolve to server-1, so players reach this pod through
+# two manual DNS records (infra/README.md, Minecraft): an `mc.late.sh` A record
+# for agent-1, and a `_minecraft._tcp.late.sh` SRV record pointing at
+# mc.late.sh:25565 so the client still accepts plain `late.sh`.
+# The port is a pod hostPort, NOT an ingress-nginx TCP passthrough
 # entry: every nginx config reload (cert-manager renewals included) drains
 # old workers after 240s and drops long-lived TCP sessions, which for a game
 # server means kicking every player. hostPort follows the same RKE2/Canal
@@ -13,8 +18,16 @@
 # whitelist. MINECRAFT_WHITELIST / MINECRAFT_OPS seed the lists on every boot;
 # runtime additions go through rcon-cli inside the pod (see README.md).
 # GriefPrevention gives players self-serve land claims that others cannot
-# build in, break, or loot; two gamerules cover the non-player damage
-# (creeper/enderman griefing, fire spread).
+# build in, break, or loot. Its own config blocks explosion damage inside
+# claims and above sea level, stops endermen moving blocks, and stops fire
+# spread and fire damage. Claims work in the overworld and the nether
+# (minecraft_patches below). The mob_griefing gamerule stays at the vanilla
+# default (on): turning it off also stops villagers farming and breeding and
+# piglins bartering, which breaks most automation farms.
+#
+# The Games hub card (late-ssh/src/app/door/minecraft/ui.rs) quotes the
+# version, difficulty, world border, and mob griefing setting to players;
+# its ui_test.rs reads this file and defaults.tf and fails when they drift.
 #
 # Ships through deploy_infra.yml like every other manifest. Never touches
 # anything else in the cluster.
@@ -38,6 +51,25 @@ resource "kubernetes_secret_v1" "minecraft" {
 # World, plugins, and server jar live here. A played world grows to a few
 # GiB; the node disk is 37 GiB shared with everything else, so the claim is
 # deliberately small and the server sets a world border (see RCON_CMDS_STARTUP).
+# Plugin config overrides. GriefPrevention writes its config.yml to the PVC
+# on first boot, and the image applies these patches to it before every
+# start, so a hand edit to a patched key in the pod reverts on restart.
+# Nether claims are on; the End stays unclaimable (GriefPrevention default).
+resource "kubernetes_config_map_v1" "minecraft_patches" {
+  metadata {
+    name = "minecraft-patches"
+  }
+
+  data = {
+    "griefprevention.json" = jsonencode({
+      file = "/data/plugins/GriefPreventionData/config.yml"
+      ops = [
+        { "$set" = { path = "$.GriefPrevention.Claims.Mode.world_nether", value = "Survival" } },
+      ]
+    })
+  }
+}
+
 resource "kubernetes_persistent_volume_claim_v1" "minecraft_data" {
   metadata {
     name = "minecraft-data"
@@ -92,6 +124,9 @@ resource "kubernetes_deployment_v1" "minecraft" {
         labels = {
           app = "minecraft"
         }
+        annotations = {
+          patches_hash = sha256(join("", values(kubernetes_config_map_v1.minecraft_patches.data)))
+        }
       }
 
       spec {
@@ -99,6 +134,18 @@ resource "kubernetes_deployment_v1" "minecraft" {
         # A big world can take tens of seconds to flush; SIGKILL mid-save
         # corrupts chunks.
         termination_grace_period_seconds = 120
+
+        # Support workload: runs on agent-1 (defaults.tf, node placement).
+        node_selector = {
+          (local.support_node_label_key) = local.support_node_label_value
+        }
+
+        toleration {
+          key      = local.support_node_label_key
+          operator = "Equal"
+          value    = local.support_node_label_value
+          effect   = "NoSchedule"
+        }
 
         container {
           name  = "minecraft"
@@ -182,6 +229,10 @@ resource "kubernetes_deployment_v1" "minecraft" {
             value = "griefprevention"
           }
           env {
+            name  = "PATCH_DEFINITIONS"
+            value = "/patches"
+          }
+          env {
             name  = "MOTD"
             value = "late.sh"
           }
@@ -193,12 +244,16 @@ resource "kubernetes_deployment_v1" "minecraft" {
             name  = "VIEW_DISTANCE"
             value = "10"
           }
-          # Re-applied on every boot, so a gamerule an op flips at runtime
-          # reverts on restart. Change it here if that is the intent.
-          # worldborder caps disk growth (see the PVC comment).
+          # Re-applied on every boot, so anything an op changes at runtime
+          # that is also set here reverts on restart. worldborder caps disk
+          # growth (see the PVC comment). No gamerules on purpose: mob_griefing
+          # stays at the vanilla default (see the header). A gamerule added
+          # here must use the snake_case names from 26.x: the old camelCase
+          # names (mobGriefing, doFireTick) fail with "Incorrect argument" in
+          # the startup log and change nothing.
           env {
             name  = "RCON_CMDS_STARTUP"
-            value = "gamerule mobGriefing false\ngamerule doFireTick false\nworldborder set 6000"
+            value = "worldborder set 6000"
           }
           env {
             name  = "ENABLE_RCON"
@@ -256,6 +311,12 @@ resource "kubernetes_deployment_v1" "minecraft" {
             name       = "data"
             mount_path = "/data"
           }
+
+          volume_mount {
+            name       = "patches"
+            mount_path = "/patches"
+            read_only  = true
+          }
         }
 
         volume {
@@ -263,6 +324,14 @@ resource "kubernetes_deployment_v1" "minecraft" {
 
           persistent_volume_claim {
             claim_name = kubernetes_persistent_volume_claim_v1.minecraft_data.metadata[0].name
+          }
+        }
+
+        volume {
+          name = "patches"
+
+          config_map {
+            name = kubernetes_config_map_v1.minecraft_patches.metadata[0].name
           }
         }
       }

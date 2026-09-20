@@ -676,6 +676,47 @@ fn abilities_scale_with_spell_power_and_the_auto_swings_by_calling() {
 }
 
 #[test]
+fn an_ability_killing_blow_reaches_the_next_tick_output() {
+    // Abilities land outside the tick (`mutate`), so their kill must survive
+    // until the tick hands it to `publish_kill_outcome`, or a crown taken
+    // with a spell pays nothing.
+    let mut s = world();
+    s.join(uid(1));
+    s.choose_class(uid(1), Class::Mage);
+    let mob_id = *s.mobs.keys().next().expect("world has mobs");
+    let mob_name = {
+        let m = s.mobs.get_mut(&mob_id).unwrap();
+        m.alive = true;
+        m.revealed = true;
+        m.current_room = 2001;
+        m.leash_home = 2001;
+        m.hp = 1;
+        m.spawn.damage = 1;
+        m.spawn.profile = DamageProfile::physical();
+        m.spawn.name.to_string()
+    };
+    {
+        let p = s.players.get_mut(&uid(1)).unwrap();
+        p.room = 2001;
+        p.equipped.insert(Slot::Weapon, 1010);
+    }
+    s.engage_mob(uid(1), mob_id);
+    s.use_ability(uid(1), 1);
+    assert!(
+        !s.mobs[&mob_id].alive,
+        "the Firebolt lands the killing blow"
+    );
+
+    let kills: Vec<(Uuid, String)> = s
+        .tick()
+        .kills
+        .into_iter()
+        .map(|kill| (kill.user_id, kill.mob_name))
+        .collect();
+    assert_eq!(kills, vec![(uid(1), mob_name)]);
+}
+
+#[test]
 fn a_draught_needs_a_breath_between_gulps() {
     let mut s = world();
     s.join(uid(1));
@@ -1960,6 +2001,114 @@ fn buying_costs_gold_and_adds_item() {
     assert!(p.inventory.contains(&1001));
 }
 
+/// A character standing at the smith with `level`, the gate titles named, and
+/// gold enough for anything.
+fn shopper(level: i32, titles: &[&str]) -> WorldState {
+    let mut s = world();
+    s.join(uid(1));
+    s.choose_class(uid(1), Class::Warrior);
+    let p = s.players.get_mut(&uid(1)).unwrap();
+    p.room = 3; // Market Row, the Ember Forge
+    p.scores = AbilityScores::default();
+    p.level = level;
+    p.gold = 10_000_000;
+    p.titles = titles.iter().map(|t| t.to_string()).collect();
+    s
+}
+
+#[test]
+fn the_shops_deep_stock_always_trails_the_kit_the_level_expects() {
+    // The balance contract behind the whole market: gold is a floor under a
+    // straggler, never a replacement for the hunt. Every piece Embergate will
+    // sell has to be weaker than what the character's own land drops at their
+    // level, at every rung of the ladder - otherwise farming gold in easy
+    // country becomes a better way to gear than clearing the zone you are in.
+    for level in [45, 55, 65, 75, 80, 100] {
+        let s = shopper(
+            level,
+            &[FRONTIER_GATE_TITLE, REACHES_GATE_TITLE, KAELMYR_GATE_TITLE],
+        );
+        let p = &s.players[&uid(1)];
+        let tier = p.market_tier().expect("a geared level has a market");
+        let expected = expected_kit_tier(level).min(super::super::items::MARKET_TIER_MAX);
+        assert!(
+            tier < expected,
+            "L{level}: the shop tier ({tier}) must trail the expected kit ({expected})"
+        );
+        for slot in super::super::items::Slot::WEARABLE {
+            let sold = item(super::super::items::market_item_id(tier, slot)).expect("stocked");
+            let dropped =
+                item(super::super::items::market_item_id(expected, slot)).expect("dropped");
+            assert!(
+                sold.power() < dropped.power(),
+                "L{level} {slot:?}: shop piece (power {}) must not match the land's own drop (power {})",
+                sold.power(),
+                dropped.power()
+            );
+        }
+    }
+}
+
+#[test]
+fn gold_cannot_buy_a_kit_out_of_a_continent_you_have_not_opened() {
+    // Level alone must not reach into a realm the character never earned the
+    // right to walk into: someone who ground to L80 in the ungated side country
+    // still shops in the Frontier's band until the King falls.
+    let frontier = shopper(80, &[FRONTIER_GATE_TITLE]);
+    assert_eq!(
+        frontier.players[&uid(1)].market_tier(),
+        Some(super::super::items::FRONTIER_TIERS as i32),
+        "the Frontier's top tier is the ceiling without the King's Bane"
+    );
+    let reaches = shopper(80, &[FRONTIER_GATE_TITLE, REACHES_GATE_TITLE]);
+    assert_eq!(
+        reaches.players[&uid(1)].market_tier(),
+        Some((super::super::items::FRONTIER_TIERS + super::super::items::REACHES_TIERS) as i32),
+        "the Reaches' top tier is the ceiling without Yssgar's Bane"
+    );
+    // And before the Frontier opens at all, the authored stock is the whole shop.
+    assert_eq!(
+        shopper(80, &[]).players[&uid(1)].market_tier(),
+        None,
+        "no gate title, no deep stock"
+    );
+}
+
+#[test]
+fn a_market_piece_you_have_not_earned_cannot_be_bought() {
+    // The panel is only a view; `buy` is the authority. A character who has not
+    // opened the Frontier must not be able to buy deep stock by sending its id.
+    let deep = super::super::items::market_item_id(
+        super::super::items::MARKET_TIER_MAX,
+        super::super::items::Slot::Weapon,
+    );
+    let mut s = shopper(80, &[]);
+    let before = s.players[&uid(1)].gold;
+    s.buy(uid(1), deep);
+    let p = &s.players[&uid(1)];
+    assert_eq!(p.gold, before, "no gold changes hands");
+    assert!(!p.inventory.contains(&deep), "and nothing is delivered");
+
+    // With every gate title and the level for it, the same shop sells a weapon
+    // at the character's own market tier, at the marked-up price.
+    let mut earned = shopper(
+        80,
+        &[FRONTIER_GATE_TITLE, REACHES_GATE_TITLE, KAELMYR_GATE_TITLE],
+    );
+    let tier = earned.players[&uid(1)].market_tier().expect("has a market");
+    let id = super::super::items::market_item_id(tier, super::super::items::Slot::Weapon);
+    let list = item(id).expect("stocked").price;
+    let before = earned.players[&uid(1)].gold;
+    earned.buy(uid(1), id);
+    let p = &earned.players[&uid(1)];
+    assert!(p.inventory.contains(&id), "the earned piece is delivered");
+    assert_eq!(
+        before - p.gold,
+        list * (100 + MARKET_MARKUP_PCT) / 100,
+        "deep stock is charged at the market markup, not list price"
+    );
+}
+
 #[test]
 fn waystone_travel_teleports_between_portals() {
     use super::super::archipelago::{island_entrance, village_room};
@@ -2180,6 +2329,70 @@ fn buying_a_companion_costs_gold_and_sets_a_pet() {
 }
 
 #[test]
+fn a_new_companion_sends_the_old_one_to_the_kennel_and_it_comes_back() {
+    let mut s = world();
+    s.join(uid(1));
+    s.choose_class(uid(1), Class::Warrior);
+    // Embergate's square (room 1) has a stable.
+    s.players.get_mut(&uid(1)).unwrap().room = 1;
+    s.players.get_mut(&uid(1)).unwrap().gold = 10_000;
+    s.buy_pet(uid(1), "war_hound");
+    s.players
+        .get_mut(&uid(1))
+        .unwrap()
+        .pet
+        .as_mut()
+        .unwrap()
+        .loyalty_xp = 450;
+    s.buy_pet(uid(1), "emberdrake");
+
+    let led = |s: &WorldState| {
+        s.players[&uid(1)]
+            .pet
+            .map(|p| (p.species.key, p.loyalty_xp))
+    };
+    let kennel = |s: &WorldState| -> Vec<(&str, i64)> {
+        s.players[&uid(1)]
+            .kennel
+            .resting()
+            .iter()
+            .map(|p| (p.species.key, p.loyalty_xp))
+            .collect()
+    };
+    assert_eq!(led(&s), Some(("emberdrake", 0)));
+    assert_eq!(
+        kennel(&s),
+        vec![("war_hound", 450)],
+        "the hound rests, not released"
+    );
+
+    // An owned species is never sold twice.
+    let gold = s.players[&uid(1)].gold;
+    s.buy_pet(uid(1), "war_hound");
+    assert_eq!(
+        s.players[&uid(1)].gold,
+        gold,
+        "no charge for a refused sale"
+    );
+    assert_eq!(led(&s), Some(("emberdrake", 0)));
+
+    // The kennel survives a save and reload.
+    let saved = s.export_saved(uid(1)).expect("character saves");
+    s.hydrate(uid(1), &saved);
+    assert_eq!(kennel(&s), vec![("war_hound", 450)]);
+
+    // Calling the hound out swaps it with the drake, loyalty intact.
+    s.call_out_pet(uid(1), "war_hound");
+    assert_eq!(led(&s), Some(("war_hound", 450)));
+    assert_eq!(kennel(&s), vec![("emberdrake", 0)]);
+
+    // Away from a Stable the kennel cannot be reached.
+    s.players.get_mut(&uid(1)).unwrap().room = broceliande_beast_room();
+    s.call_out_pet(uid(1), "emberdrake");
+    assert_eq!(led(&s), Some(("war_hound", 450)));
+}
+
+#[test]
 fn a_companion_piles_onto_your_target_in_combat() {
     let (mut s, mob_id) = engaged_with(MobBehavior::Brute);
     // Give the fighter a companion (the stable is back in town).
@@ -2244,6 +2457,116 @@ fn feeding_at_a_stable_revives_and_strengthens_a_companion() {
 }
 
 #[test]
+fn feed_companion_feeds_a_healthy_pet_even_with_a_stray_in_the_square() {
+    // Reported: at the Stable, `x feed/tend (20g)` courted the Town Square's
+    // stray dog instead, because a healthy pet loses to an adoptable critter
+    // in the one-key `~` routing. `G` is for your own companion.
+    let mut s = world();
+    s.join(uid(1));
+    s.choose_class(uid(1), Class::Warrior);
+    let species = super::super::pets::pet_species_by_key("cave_bear").unwrap();
+    {
+        let p = s.players.get_mut(&uid(1)).unwrap();
+        p.room = 1; // Embergate's Town Square: the Stable and a stray dog
+        p.pet = Some(super::super::pets::Pet::new(species, 0));
+        p.gold = 500;
+    }
+    assert!(
+        critters_at(1).iter().any(|c| c.adoptable),
+        "the square must hold a stray for this to test anything"
+    );
+    s.feed_companion(uid(1));
+    let p = &s.players[&uid(1)];
+    assert!(p.stray_bond.is_none(), "the stray is left alone");
+    assert!(p.pet.unwrap().loyalty_xp > 0, "the bear is fed");
+    assert_eq!(p.gold, 500 - PET_FEED_COST);
+}
+
+#[test]
+fn a_companion_grows_on_four_meals_a_day_and_is_only_mended_past_them() {
+    let mut s = world();
+    s.join(uid(1));
+    s.choose_class(uid(1), Class::Warrior);
+    let species = super::super::pets::pet_species_by_key("cave_bear").unwrap();
+    {
+        let p = s.players.get_mut(&uid(1)).unwrap();
+        p.pet = Some(super::super::pets::Pet::new(species, 0));
+        p.gold = 1_000;
+    }
+    for _ in 0..super::super::pets::MEALS_PER_DAY {
+        s.feed_companion(uid(1));
+    }
+    let loyalty = super::super::pets::FEED_LOYALTY * i64::from(super::super::pets::MEALS_PER_DAY);
+    let spent = PET_FEED_COST * i64::from(super::super::pets::MEALS_PER_DAY);
+    assert_eq!(s.players[&uid(1)].pet.unwrap().loyalty_xp, loyalty);
+    assert_eq!(s.players[&uid(1)].gold, 1_000 - spent);
+
+    // A fifth feed of a healthy pet is turned away, and costs nothing.
+    s.feed_companion(uid(1));
+    assert_eq!(s.players[&uid(1)].pet.unwrap().loyalty_xp, loyalty);
+    assert_eq!(
+        s.players[&uid(1)].gold,
+        1_000 - spent,
+        "a sated, healthy pet is free"
+    );
+
+    // A downed pet past its meals is still roused, for the fee, with no loyalty.
+    {
+        let pet = s.players.get_mut(&uid(1)).unwrap().pet.as_mut().unwrap();
+        pet.downed = true;
+        pet.hp = 0;
+    }
+    s.feed_companion(uid(1));
+    let pet = s.players[&uid(1)].pet.unwrap();
+    assert!(!pet.downed, "the cap never leaves a pet downed");
+    assert_eq!(pet.hp, pet.max_hp());
+    assert_eq!(pet.loyalty_xp, loyalty, "but it grows no fonder");
+    assert_eq!(s.players[&uid(1)].gold, 1_000 - spent - PET_FEED_COST);
+
+    // A new day brings the meals back.
+    let (day, meals) = s.players[&uid(1)].pet_meals;
+    s.players.get_mut(&uid(1)).unwrap().pet_meals = (day - 1, meals);
+    s.feed_companion(uid(1));
+    assert_eq!(
+        s.players[&uid(1)].pet.unwrap().loyalty_xp,
+        loyalty + super::super::pets::FEED_LOYALTY
+    );
+}
+
+#[test]
+fn a_healthy_companion_at_the_level_cap_is_turned_away_free() {
+    // Loyalty past the cap raises nothing, so there is no meal to sell.
+    let mut s = world();
+    s.join(uid(1));
+    s.choose_class(uid(1), Class::Warrior);
+    let species = super::super::pets::pet_species_by_key("cave_bear").unwrap();
+    let capped =
+        super::super::pets::LOYALTY_PER_LEVEL * i64::from(super::super::pets::PET_MAX_LEVEL - 1);
+    {
+        let p = s.players.get_mut(&uid(1)).unwrap();
+        p.pet = Some(super::super::pets::Pet::new(species, capped));
+        p.gold = 500;
+    }
+    s.feed_companion(uid(1));
+    let p = &s.players[&uid(1)];
+    assert_eq!(p.gold, 500, "nothing to pay for");
+    assert_eq!(p.pet.unwrap().loyalty_xp, capped);
+    assert_eq!(p.pet_meals, (0, 0), "and no meal is spent");
+
+    // Hurt, it is still mended for the fee.
+    {
+        let pet = s.players.get_mut(&uid(1)).unwrap().pet.as_mut().unwrap();
+        pet.downed = true;
+        pet.hp = 0;
+    }
+    s.feed_companion(uid(1));
+    let p = &s.players[&uid(1)];
+    assert!(!p.pet.unwrap().downed);
+    assert_eq!(p.gold, 500 - PET_FEED_COST);
+    assert_eq!(p.pet.unwrap().loyalty_xp, capped);
+}
+
+#[test]
 fn feeding_works_anywhere_not_just_at_a_stable() {
     // Reported pain point: a pet going down mid-fight deep in the Frontier
     // used to be stuck downed until a long walk back to a capital's Stable.
@@ -2288,7 +2611,7 @@ fn taming_a_beast_makes_it_your_companion_and_trains_the_trade() {
     let beast_index = beasts[0].species;
     let species = super::super::taming::beast_species(beast_index);
     let cooldown_key = (user_id, beast_index);
-    let baseline_xp = super::super::skills::xp_for_skill_level(species.tame_level);
+    let baseline_xp = super::super::skills::xp_for_skill_level(species.tame_level());
     s.players.get_mut(&user_id).unwrap().taming_xp = baseline_xp;
 
     // Exercise both real RNG outcomes. The old retry loop was flaky because a
@@ -3878,92 +4201,6 @@ fn nearby_players_lists_adventurers_in_neighbouring_rooms() {
     );
 }
 
-// Wildbound riding: mounted movement strides multiple rooms per keypress.
-#[test]
-fn a_mounted_step_strides_the_full_length_of_the_road() {
-    let mut s = world();
-    s.join(uid(1));
-    s.choose_class(uid(1), Class::Warrior);
-    // Find a straight 6-room east chain inside one region (no gateways).
-    let chain = {
-        let mut found: Option<Vec<RoomId>> = None;
-        'scan: for &start in s.world.rooms.keys() {
-            let mut chain = vec![start];
-            let mut cur = start;
-            for _ in 0..5 {
-                let Some(&next) = s.world.room(cur).and_then(|r| r.exits.get(&Dir::East)) else {
-                    continue 'scan;
-                };
-                // Stay well inside one id band so no progression gate triggers.
-                if next.abs_diff(start) > 300 {
-                    continue 'scan;
-                }
-                chain.push(next);
-                cur = next;
-            }
-            found = Some(chain);
-            break;
-        }
-        found.expect("the world has a straight six-room east road somewhere")
-    };
-    {
-        let p = s.players.get_mut(&uid(1)).unwrap();
-        p.room = chain[0];
-        p.base_max_hp = 5000; // survive anything roaming the road
-        p.hp = 5000;
-        let serpent = super::super::taming::tameable_by_key("wb_worldserpent").unwrap();
-        p.pet = Some(Pet::new(serpent, 0));
-    }
-    s.toggle_mount(uid(1));
-    assert!(s.players[&uid(1)].mounted, "saddled up");
-    s.move_player(uid(1), Dir::East);
-    let landed = s.players[&uid(1)].room;
-    assert_eq!(
-        landed, chain[5],
-        "a stride-5 mount covers five rooms in one step"
-    );
-}
-
-#[test]
-fn you_cannot_ride_the_unrideable_and_combat_grounds_you() {
-    const ROOM: RoomId = 2001;
-    let mut s = world();
-    s.join(uid(1));
-    s.choose_class(uid(1), Class::Warrior);
-    // No pet at all: refused.
-    s.toggle_mount(uid(1));
-    assert!(!s.players[&uid(1)].mounted);
-    // A hare is not a horse: refused.
-    {
-        let p = s.players.get_mut(&uid(1)).unwrap();
-        let hare = super::super::taming::tameable_by_key("wt_hare").unwrap();
-        p.pet = Some(Pet::new(hare, 0));
-    }
-    s.toggle_mount(uid(1));
-    assert!(!s.players[&uid(1)].mounted, "a hare cannot carry a rider");
-    // A palfrey can - but starting a fight puts you back on your feet.
-    {
-        let p = s.players.get_mut(&uid(1)).unwrap();
-        let palfrey = super::super::taming::tameable_by_key("wb_palfrey").unwrap();
-        p.pet = Some(Pet::new(palfrey, 0));
-        p.room = ROOM;
-    }
-    s.toggle_mount(uid(1));
-    assert!(s.players[&uid(1)].mounted);
-    let mob_id = *s.mobs.keys().next().unwrap();
-    {
-        let m = s.mobs.get_mut(&mob_id).unwrap();
-        m.alive = true;
-        m.revealed = true;
-        m.current_room = ROOM;
-    }
-    s.engage(uid(1));
-    assert!(
-        !s.players[&uid(1)].mounted,
-        "combat slides you out of the saddle"
-    );
-}
-
 #[test]
 fn feeding_a_stray_daily_wins_it_over_as_a_companion() {
     // Genesys: five consecutive days of feeding a wild adoptable critter wins
@@ -5374,5 +5611,44 @@ fn a_coated_weapon_works_in_a_duel_too() {
         stacks.iter().filter(|d| d.owner == uid(1)).count(),
         1,
         "five landed duel swings, one coat wound"
+    );
+}
+
+#[test]
+fn asking_a_villager_puts_their_answer_in_the_feed() {
+    use super::super::world::{FeatureKind, VILLAGERS, features_at};
+
+    // The bug: a villager's dialogue was logged as `LogKind::Room`, the kind
+    // that means "a line of the room description". The field layout's Recent
+    // strip drops that kind on purpose, because the Now panel already carries
+    // the description (`collapsed_recent_entries`). So pressing Enter on a
+    // villager printed nothing whatsoever, while the room stood there saying
+    // "Press o to ask".
+    let villager = VILLAGERS.first().expect("the world has villagers");
+    let mut s = world();
+    s.join(uid(1));
+    s.choose_class(uid(1), Class::Warrior);
+    s.players.get_mut(&uid(1)).unwrap().room = villager.room;
+    let idx = features_at(villager.room)
+        .iter()
+        .position(|f| f.kind == FeatureKind::Villager)
+        .expect("the villager stands in their own room");
+
+    let before = s.players[&uid(1)].log.len();
+    s.interact(uid(1), idx);
+    let spoken: Vec<_> = s.players[&uid(1)].log[before..].to_vec();
+
+    assert!(
+        spoken.iter().any(|l| l.text.contains(villager.desc)),
+        "asking a villager should say their line back: {spoken:?}"
+    );
+    // And it has to survive the feed that actually renders it. Room-kind lines
+    // are dropped there, so tagging speech as room description is the same as
+    // not logging it at all.
+    assert!(
+        spoken
+            .iter()
+            .any(|l| l.kind != LogKind::Room && l.text.contains(villager.desc)),
+        "a villager's answer is an event, not room description: {spoken:?}"
     );
 }

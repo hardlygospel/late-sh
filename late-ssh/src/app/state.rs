@@ -5,7 +5,9 @@ use crossterm::{
     terminal::{self, ClearType},
 };
 use late_core::{MutexRecover, api_types::NowPlaying};
-use ratatui::{Terminal, TerminalOptions, Viewport, backend::CrosstermBackend, layout::Rect};
+use ratatui::{Terminal, TerminalOptions, Viewport, layout::Rect};
+
+use super::terminal_backend::GlyphIsolatingBackend;
 use std::{
     collections::{HashMap, HashSet},
     io::{self, Write},
@@ -500,6 +502,10 @@ pub struct App {
     /// Where `Ctrl+F` was pressed, so the chord hands the page back; cleared
     /// whenever Zen is left, and `None` on a session that landed on Zen.
     pub(crate) zen_return_screen: Option<Screen>,
+    /// Where the backtick chain comes home to: Home, or Zen when the games
+    /// were entered from Zen. Recorded by `set_screen` through
+    /// `workspace::cycle::note_screen_change`.
+    pub(crate) workspace_base: crate::app::workspace::cycle::WorkspaceBase,
     /// A layout edit not yet written to `users.settings`. Flushed on tick's
     /// one-hertz edge and on leaving the page, so a held resize key costs
     /// one row update rather than one per key repeat.
@@ -510,7 +516,7 @@ pub struct App {
     pub(crate) vt_input: crate::app::input::VtInputParser,
 
     /// Terminal / rendering
-    pub(super) terminal: Terminal<CrosstermBackend<io::BufWriter<SharedBuffer>>>,
+    pub(super) terminal: Terminal<GlyphIsolatingBackend<io::BufWriter<SharedBuffer>>>,
     pub(super) shared: SharedBuffer,
 
     /// Session / connection
@@ -532,6 +538,9 @@ pub struct App {
     pub(crate) clubhouse: crate::app::clubhouse::state::State,
     /// Nightcap: the small bar reachable with `n` from the clubhouse.
     pub(crate) nightcap: crate::app::nightcap::state::State,
+    /// The night city page (`app/deadchannel/city`): where the runner
+    /// stands, the open shop panel, the street's last line.
+    pub(crate) city: crate::app::deadchannel::city::state::State,
     /// Chips backend, kept for the clubhouse's on-the-house welcome pour.
     pub(crate) chip_service: crate::app::games::chips::svc::ChipService,
     /// Staff bot ids from the active-users map, for speech bubbles and the
@@ -561,6 +570,11 @@ pub struct App {
     /// shared `active_users` map every frame.
     pub(crate) online_count: usize,
     pub(crate) active_friend_names: Vec<String>,
+    /// The same friends with what the Zen Friends tile shows beside them.
+    pub(crate) active_friends: Vec<crate::app::chat::state::ActiveFriend>,
+    /// The unread mention count the mentions list was last requested at
+    /// while an Inbox tile is on the Zen page (the list loads only on ask).
+    pub(super) zen_inbox_listed_unread: Option<i64>,
     /// Last rendered sidebar clock text, compared on the ~1s tick so minute
     /// rollovers count as a render-visible change.
     pub(super) last_sidebar_clock: String,
@@ -699,7 +713,7 @@ pub struct App {
     pub(crate) session_daily_wins: crate::app::arcade::daily::SessionDailyWins,
 
     /// Bonsai
-    pub(crate) bonsai_state: crate::app::bonsai::state::BonsaiState,
+    pub(crate) bonsai: crate::app::bonsai::session::BonsaiSession,
 
     /// Cat companion
     pub(crate) pet_state: crate::app::pet::state::PetState,
@@ -931,6 +945,15 @@ pub(super) fn listen_url(web_url: &str) -> String {
 }
 
 impl App {
+    /// A runner: this session's user has a `deadchannel_runners` row, the
+    /// one thing `/join #deadchannel` creates and nothing else does. The
+    /// gate for everything under the clubhouse (the undercity today). Read
+    /// from the owned looks map, so it costs nothing on the hot path and
+    /// follows a join on the next tick edge, on every replica.
+    pub fn is_runner(&self) -> bool {
+        self.runner_looks.contains_key(&self.user_id)
+    }
+
     pub fn is_running(&self) -> bool {
         self.running
     }
@@ -1094,7 +1117,7 @@ impl App {
         tracing::debug!(cols, rows, "initializing app");
 
         let shared = SharedBuffer::default();
-        let backend = CrosstermBackend::new(frame_writer(&shared));
+        let backend = GlyphIsolatingBackend::new(frame_writer(&shared));
         let viewport = Viewport::Fixed(Rect::new(0, 0, cols, rows));
         let terminal = Terminal::with_options(backend, TerminalOptions { viewport })
             .context("failed to create terminal backend")?;
@@ -1234,27 +1257,23 @@ impl App {
         let splash_piece = config.splash_piece.clone();
         let username = config.username.clone();
 
-        let initial_bonsai_decay_protection = config.initial_bonsai_decay_protection;
-        // The fallback only exists for a failed load at bootstrap. It is
-        // built `Detached`, so every persist on it is a no-op and it can
-        // never overwrite the real row; the next login loads for real.
-        let bonsai_state = config
-            .initial_bonsai_tree
-            .map(|tree| {
-                crate::app::bonsai::state::BonsaiState::new(
-                    config.user_id,
-                    config.bonsai_service.clone(),
-                    tree,
-                    initial_bonsai_decay_protection,
-                )
-            })
-            .unwrap_or_else(|| {
-                crate::app::bonsai::state::BonsaiState::fallback(
-                    config.user_id,
-                    config.bonsai_service.clone(),
-                    config.user_id.as_u128() as i64,
-                )
-            });
+        // A failed bootstrap load draws a placeholder root until the first
+        // answer or change notice brings the stored tree in.
+        let bonsai_tree = match config.initial_bonsai_tree {
+            Some(tree) => crate::app::bonsai::state::BonsaiState::view_only(
+                tree,
+                config.initial_bonsai_decay_protection,
+            ),
+            None => crate::app::bonsai::state::BonsaiState::fallback(
+                config.user_id,
+                config.user_id.as_u128() as i64,
+            ),
+        };
+        let bonsai = crate::app::bonsai::session::BonsaiSession::new(
+            config.user_id,
+            config.bonsai_service.clone(),
+            bonsai_tree,
+        );
 
         let pet_state = if let Some(companion) = config.initial_pet {
             crate::app::pet::state::PetState::new(
@@ -1276,6 +1295,7 @@ impl App {
                     species: late_core::models::pet::PetSpecies::Cat.as_str().to_string(),
                     mood: late_core::models::pet::PetMood::Asleep.as_str().to_string(),
                     mood_since: chrono::Utc::now(),
+                    last_petted: None,
                 },
             )
         };
@@ -1404,6 +1424,12 @@ impl App {
                 crate::app::zen::state::RiceLayout::from_json(config.zen_layout.as_ref()),
             ),
             zen_return_screen: None,
+            workspace_base: match landing {
+                LandingPage::Zen => crate::app::workspace::cycle::WorkspaceBase::Zen { back: None },
+                LandingPage::Clubhouse | LandingPage::Home => {
+                    crate::app::workspace::cycle::WorkspaceBase::Home
+                }
+            },
             zen_layout_dirty: false,
             mod_modal_state: mod_modal::state::ModModalState::new(),
             pending_escape: false,
@@ -1429,6 +1455,7 @@ impl App {
                 config.user_id,
                 config.username.clone(),
             ),
+            city: crate::app::deadchannel::city::state::State::new(),
             chip_service: config.chip_service,
             clubhouse_bartender_id: None,
             clubhouse_graybeard_id: None,
@@ -1443,6 +1470,8 @@ impl App {
                 .map(crate::state::online_human_count)
                 .unwrap_or(0),
             active_friend_names: Vec::new(),
+            active_friends: Vec::new(),
+            zen_inbox_listed_unread: None,
             last_sidebar_clock: String::new(),
             chat_ctx_epoch: 0,
             last_username_directory: None,
@@ -1554,7 +1583,6 @@ impl App {
             profile_modal_state: profile_modal::state::ProfileModalState::new(
                 config.profile_service.clone(),
                 config.showcase_service.clone(),
-                config.bonsai_service.clone(),
             ),
             settings_modal_state,
             sheet_modal_state: sheet_modal::state::SheetModalState::new(),
@@ -1572,7 +1600,7 @@ impl App {
                 .unwrap_or_default(),
             leaderboard_rx: config.leaderboard_rx,
             session_daily_wins: crate::app::arcade::daily::SessionDailyWins::new(),
-            bonsai_state,
+            bonsai,
             pet_state,
             quest_state,
             shop_state,
@@ -2271,6 +2299,11 @@ impl App {
             self.scratchpad = None;
         }
 
+        // Crossing into the games records where the backtick chain comes
+        // home to; coming home to Zen restores its Ctrl+F page, which the
+        // Zen arm below forgot on the way out.
+        crate::app::workspace::cycle::note_screen_change(self, screen);
+
         let screen_changed = self.screen != screen;
         // Leaving Zen writes any layout edit the debounce still holds, and
         // forgets where Ctrl+F came from however the page was left (a digit,
@@ -2460,7 +2493,7 @@ impl App {
         // with a `Viewport::Fixed` is pure state construction and never
         // touches the backend, and `force_full_repaint` supplies the client
         // clear + full redraw that `Terminal::resize` used to perform.
-        let backend = CrosstermBackend::new(frame_writer(&self.shared));
+        let backend = GlyphIsolatingBackend::new(frame_writer(&self.shared));
         let viewport = Viewport::Fixed(Rect::new(0, 0, cols, rows));
         self.terminal = Terminal::with_options(backend, TerminalOptions { viewport })?;
         self.force_full_repaint();
@@ -2470,6 +2503,12 @@ impl App {
     pub fn handle_input(&mut self, data: &[u8]) {
         if !data.is_empty() {
             self.last_input_at = Instant::now();
+        }
+        // First contact's breakthrough (`app/deadchannel/haunt`): while it
+        // plays, every key is swallowed here, before a running door game or
+        // the parser sees it.
+        if self.haunt.breakthrough_playing() {
+            return;
         }
         /// Backtick, the workspace-cycle key, matched as a whole input chunk
         /// (like the doors' F1 remap): inside a running roguelike it detaches

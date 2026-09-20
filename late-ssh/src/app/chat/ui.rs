@@ -42,7 +42,8 @@ use super::state::{
     MentionMatch, ROOM_JUMP_KEYS, RoomSection, RoomSlot, RoomVisualOrderInput,
     SelectedRoomSlotState, SelectionScroll, TranslationDisplay, compare_dm_rooms_for_nav,
     dm_is_promoted_unread, dm_peer_is_ignored, is_chat_list_room, is_deadchannel_room,
-    is_selected_slot, visual_order_for_rooms,
+    is_selected_slot, synthetic_favorite_id, synthetic_slot_for_favorite_id,
+    visual_order_for_rooms,
 };
 use super::ui_text::{AuthorTint, Gutter, reaction_label, wrap_chat_entry_to_lines};
 
@@ -593,9 +594,17 @@ pub(crate) fn composer_placeholder_lines(view: &ComposerBlockView<'_>, width: us
     )
 }
 
+/// Vertical layout for an embedded chat (Zen tiles, house tables, daily
+/// boards): messages fill, one blank breather, then the composer. These
+/// surfaces draw no activity ticker, so its row goes to the messages.
 fn split_chat_and_composer(area: Rect, composer_height: u16) -> (Rect, Rect) {
-    let (messages, _, composer) = split_chat_ticker_and_composer(area, composer_height);
-    (messages, composer)
+    let layout = Layout::vertical([
+        Constraint::Fill(1),
+        Constraint::Length(1),
+        Constraint::Length(composer_height),
+    ])
+    .split(area);
+    (layout[0], layout[2])
 }
 
 /// Vertical layout for a chat surface: messages fill, then a blank breather,
@@ -3112,6 +3121,10 @@ pub(crate) struct ChatRoomListView<'a> {
 }
 
 pub struct EmbeddedRoomChatView<'a> {
+    /// Columns kept clear on each side of the messages. A surface that
+    /// draws its own border around the chat (a Zen tile) passes 0, so the
+    /// text sits one column in, as on Home; a bare panel passes 1.
+    pub messages_inset: u16,
     pub title: &'a str,
     pub messages: &'a [ChatMessage],
     pub overlay: Option<&'a Overlay>,
@@ -3234,7 +3247,7 @@ pub fn draw_embedded_room_chat(
         };
     }
 
-    let messages_text_area = horizontal_inset(messages_area, 1);
+    let messages_text_area = horizontal_inset(messages_area, view.messages_inset);
 
     let height = messages_text_area.height.max(1) as usize;
     let width = messages_text_area.width.max(1) as usize;
@@ -4376,19 +4389,25 @@ fn build_cozy_room_rail_rows(view: &ChatRoomListView<'_>, width: u16) -> RoomLis
         .favorite_room_ids
         .iter()
         .copied()
-        .map(RoomSlot::Room)
+        .map(|id| synthetic_slot_for_favorite_id(id).unwrap_or(RoomSlot::Room(id)))
         .filter(|slot| order.contains(slot))
         .collect();
     let favorite_ids: std::collections::HashSet<Uuid> = view
         .favorite_room_ids
         .iter()
         .copied()
-        .filter(|id| {
-            view.chat_rooms
+        .filter(|id| match synthetic_slot_for_favorite_id(*id) {
+            Some(RoomSlot::Feeds) => view.feeds_available,
+            Some(_) => true,
+            None => view
+                .chat_rooms
                 .iter()
-                .any(|(r, _)| r.id == *id && is_chat_list_room(r))
+                .any(|(r, _)| r.id == *id && is_chat_list_room(r)),
         })
         .collect();
+    let favorited = |slot: RoomSlot| -> bool {
+        synthetic_favorite_id(slot).is_some_and(|id| favorite_ids.contains(&id))
+    };
     if !bumped_slugs.is_empty() {
         push_row(plain_section_header("bumped"), None, false);
         for slug in &bumped_slugs {
@@ -4426,9 +4445,13 @@ fn build_cozy_room_rail_rows(view: &ChatRoomListView<'_>, width: u16) -> RoomLis
                 push_slot(RoomSlot::Room(room.id), &mut push_row);
             }
         }
-        push_slot(RoomSlot::Notifications, &mut push_row);
-        push_slot(RoomSlot::News, &mut push_row);
-        if view.feeds_available {
+        if !favorited(RoomSlot::Notifications) {
+            push_slot(RoomSlot::Notifications, &mut push_row);
+        }
+        if !favorited(RoomSlot::News) {
+            push_slot(RoomSlot::News, &mut push_row);
+        }
+        if view.feeds_available && !favorited(RoomSlot::Feeds) {
             push_slot(RoomSlot::Feeds, &mut push_row);
         }
         // Voice sits directly above Discover ("+ browse rooms") at the bottom of Core.
@@ -4449,17 +4472,19 @@ fn build_cozy_room_rail_rows(view: &ChatRoomListView<'_>, width: u16) -> RoomLis
             push_slot(RoomSlot::Room(room.id), &mut push_row);
         }
         // Discover ("+ browse rooms") is the last entry in Core.
-        push_slot(RoomSlot::Discover, &mut push_row);
+        if !favorited(RoomSlot::Discover) {
+            push_slot(RoomSlot::Discover, &mut push_row);
+        }
     }
 
-    // Stream: registered "watch me" streams, directly under Core, mirroring
+    // Stream: live "watch me" streams, directly under Core, mirroring
     // `visual_order_for_rooms`. The section only exists while somebody is
-    // streaming.
-    if !view.live_streams.is_empty() {
+    // live; a pending stream gets no row.
+    if view.live_streams.iter().any(|stream| stream.live) {
         push_row(blank(), None, false);
         push_row(section_header(RoomSection::Stream), None, false);
         if !collapsed_set.contains(&RoomSection::Stream) {
-            for stream in view.live_streams {
+            for stream in view.live_streams.iter().filter(|stream| stream.live) {
                 push_slot(RoomSlot::Room(stream.room_id), &mut push_row);
             }
         }

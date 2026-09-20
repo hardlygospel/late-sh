@@ -277,7 +277,7 @@ pub fn test_app_state(db: Db, config: Config) -> State {
     let solitaire_service = SolitaireService::new(db.clone(), activity_tx.clone());
     let minesweeper_service = MinesweeperService::new(db.clone(), activity_tx.clone());
     let bonsai_service = BonsaiService::new(db.clone(), activity_tx.clone());
-    let pet_service = PetService::new(db.clone());
+    let pet_service = PetService::new(db.clone(), activity_tx.clone());
     let aquarium_service =
         crate::app::hub::aquarium::svc::AquariumService::new(db.clone(), activity_tx.clone());
     let dartboard_server = crate::dartboard::spawn_server();
@@ -447,6 +447,11 @@ pub struct SessionWorld {
     pub landing_page: Option<late_core::models::user::LandingPage>,
     /// A first-ever session, which always starts in the Clubhouse.
     pub is_new_user: bool,
+    /// One replica's chat service, shared the way production shares it:
+    /// every session on it hears every other's `ChatEvent`s. Unset gives
+    /// the session its own. Mention notifications ride the app's own
+    /// `NotificationService`, which this does not share.
+    pub chat_service: Option<ChatService>,
 }
 
 pub fn make_app_in_world(db: Db, user_id: Uuid, session_token: &str, world: SessionWorld) -> App {
@@ -471,7 +476,10 @@ fn make_app_with_chat_service_and_permissions(
     // main.rs: mention events broadcast on the instance's channel, so a second
     // instance would never deliver them to the app.
     let notification_service = NotificationService::new(db.clone());
-    let chat_service = ChatService::new(db.clone(), notification_service.clone());
+    let chat_service = match world.chat_service.clone() {
+        Some(shared) => shared,
+        None => ChatService::new(db.clone(), notification_service.clone()),
+    };
     let activity_tx = broadcast::channel::<ActivityEvent>(64).0;
     let quest_service = QuestService::new(db.clone(), activity_tx.clone());
     let quest_snapshot_rx = quest_service.subscribe_snapshot(user_id);
@@ -589,7 +597,7 @@ fn make_app_with_chat_service_and_permissions(
         bonsai_service: BonsaiService::new(db.clone(), broadcast::channel::<ActivityEvent>(64).0),
         initial_bonsai_tree: None,
         initial_bonsai_decay_protection: None,
-        pet_service: PetService::new(db.clone()),
+        pet_service: PetService::new(db.clone(), broadcast::channel::<ActivityEvent>(64).0),
         initial_pet: None,
         aquarium_service: crate::app::hub::aquarium::svc::AquariumService::new(
             db.clone(),
@@ -844,7 +852,7 @@ pub fn make_app_with_paired_client(
         bonsai_service: BonsaiService::new(db.clone(), broadcast::channel::<ActivityEvent>(64).0),
         initial_bonsai_tree: None,
         initial_bonsai_decay_protection: None,
-        pet_service: PetService::new(db.clone()),
+        pet_service: PetService::new(db.clone(), broadcast::channel::<ActivityEvent>(64).0),
         initial_pet: None,
         aquarium_service: crate::app::hub::aquarium::svc::AquariumService::new(
             db.clone(),
@@ -1061,25 +1069,94 @@ pub fn render_plain(app: &mut App) -> String {
     strip_ansi(&String::from_utf8_lossy(&frame))
 }
 
+/// The text a client terminal would show for one frame: escape sequences
+/// are dropped and every printed glyph lands where the cursor moves put it,
+/// so the result reads as the screen's rows in order. Positioning matters
+/// because the SSH backend (`app/terminal_backend.rs`) re-anchors the
+/// cursor after every non-ASCII glyph and blanks a wide glyph's cells
+/// before drawing it; a plain strip of the wire bytes would show those
+/// blanks as gaps inside CJK and emoji text. Cells a frame never writes
+/// contribute nothing, and rows are concatenated without separators, which
+/// is what a straight strip of a full repaint produced.
 pub fn strip_ansi(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
+    use unicode_width::UnicodeWidthChar;
+
+    let mut cells: std::collections::BTreeMap<(u16, u16), String> =
+        std::collections::BTreeMap::new();
+    let (mut x, mut y) = (0u16, 0u16);
+    let mut last_written: Option<(u16, u16)> = None;
     let mut chars = input.chars().peekable();
     while let Some(ch) = chars.next() {
-        if ch != '\u{1B}' {
-            out.push(ch);
-            continue;
-        }
-        if !matches!(chars.peek(), Some('[')) {
-            continue;
-        }
-        chars.next();
-        for c in chars.by_ref() {
-            if matches!(c, '\u{40}'..='\u{7E}') {
-                break;
+        match ch {
+            '\u{1B}' => match chars.peek() {
+                Some('[') => {
+                    chars.next();
+                    let mut params = String::new();
+                    let mut final_byte = None;
+                    for c in chars.by_ref() {
+                        if matches!(c, '\u{40}'..='\u{7E}') {
+                            final_byte = Some(c);
+                            break;
+                        }
+                        params.push(c);
+                    }
+                    // The cursor moves are the sequences that place text;
+                    // colors, clears, and mode switches leave no glyph. The
+                    // backend uses both: row and column (`H`), and column
+                    // only (`G`) after a single-codepoint glyph.
+                    match final_byte {
+                        Some('H') => {
+                            let (row, col) = params.split_once(';').unwrap_or(("1", "1"));
+                            y = row.parse::<u16>().unwrap_or(1).saturating_sub(1);
+                            x = col.parse::<u16>().unwrap_or(1).saturating_sub(1);
+                        }
+                        Some('G') => {
+                            x = params.parse::<u16>().unwrap_or(1).saturating_sub(1);
+                        }
+                        _ => {}
+                    }
+                }
+                Some(']') | Some('P') | Some('X') | Some('^') | Some('_') => {
+                    // OSC / DCS / SOS / PM / APC: a string terminated by BEL
+                    // or ST; nothing in it is screen text.
+                    chars.next();
+                    let mut prev = '\0';
+                    for c in chars.by_ref() {
+                        if c == '\u{07}' || (prev == '\u{1B}' && c == '\\') {
+                            break;
+                        }
+                        prev = c;
+                    }
+                }
+                _ => {}
+            },
+            '\r' => x = 0,
+            '\n' => {
+                x = 0;
+                y = y.saturating_add(1);
             }
+            _ => match ch.width().unwrap_or(0) {
+                0 => {
+                    // A combining mark, VS16 or ZWJ belongs to the glyph
+                    // before it.
+                    if let Some(pos) = last_written
+                        && let Some(cell) = cells.get_mut(&pos)
+                    {
+                        cell.push(ch);
+                    }
+                }
+                width => {
+                    cells.insert((y, x), ch.to_string());
+                    for extra in 1..width as u16 {
+                        cells.insert((y, x.saturating_add(extra)), String::new());
+                    }
+                    last_written = Some((y, x));
+                    x = x.saturating_add(width as u16);
+                }
+            },
         }
     }
-    out
+    cells.into_values().collect()
 }
 
 /// The switches a test app runs under: kill switch on (so an armed whisper

@@ -3,6 +3,9 @@
 //! reef, the pet box, the embedded room chat, the equalizer); what this
 //! file adds is the composition and the chrome.
 
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
+
 use ratatui::{
     Frame,
     layout::{Alignment, Rect},
@@ -10,10 +13,13 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Clear, Paragraph},
 };
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use uuid::Uuid;
 
 use super::{
     bigclock,
     layout::{self, BONSAI_STATUS_ROWS, FLOOR_ROWS},
+    rows::{Headline, InboxRow},
     state::{BorderKind, TileKind, ZenState},
 };
 use late_core::models::aquarium_care::CARE_DAYS;
@@ -21,13 +27,17 @@ use late_core::models::user::{AudioSource, IcecastStream, RadioStation};
 
 use crate::app::{
     audio::stations::{icecast_stream_display_name, radio_station_display_name},
-    audio::viz::{EqState, render_eq},
+    audio::viz::{Dance, EqState, dance_lines, render_eq},
     bonsai::{
         render::{PREVIEW_WIDTH, apply_sway, canvas_lines, center_lines, render_preview_lines},
         state::{BonsaiState, CANVAS_HEIGHT, CANVAS_WIDTH},
     },
+    chat::state::{ActiveFriend, ActivityTickerEntry},
     chat::ui::{EmbeddedRoomChatView, draw_embedded_room_chat},
-    common::{primitives::hint_line, theme},
+    common::{
+        primitives::{format_relative_time_short, hint_line},
+        theme,
+    },
     files::terminal_image::TerminalImageFrame,
     hub::aquarium::state::{AquariumCare, AquariumState, CareBar},
     lobby::daily::{panel::draw_daily_compact, state::DailyState},
@@ -64,13 +74,22 @@ pub(crate) struct ZenView<'a> {
     pub clock: &'a str,
     pub date: String,
     pub online_count: usize,
-    pub friends: &'a [String],
-    pub status: Option<crate::app::common::status::Status>,
     pub mentions_unread: i64,
     /// Daily correspondence games for the lobby tile, and whether the lobby
     /// label glows (your turn somewhere, or a result waiting).
     pub daily: &'a DailyState,
     pub lobby_glow: bool,
+    /// The #lounge activity feed, newest first (`ChatState::activity_ticker`).
+    pub activity: &'a [ActivityTickerEntry],
+    pub active_friends: &'a [ActiveFriend],
+    /// Per-peer `/status` badges, for the Friends tile.
+    pub peer_statuses: &'a HashMap<Uuid, String>,
+    /// The viewer's chips and today's care, for the Pulse tile.
+    pub chip_balance: i64,
+    pub care: Care,
+    /// Built only while an Inbox or Headlines tile is on the page.
+    pub inbox: Vec<InboxRow>,
+    pub headlines: Vec<Headline>,
     pub wall_tick: usize,
 }
 
@@ -125,8 +144,12 @@ pub(crate) fn draw_rice(
             | TileKind::Music
             | TileKind::Clock
             | TileKind::Visualizer
-            | TileKind::Presence
             | TileKind::Lobby
+            | TileKind::Activity
+            | TileKind::Friends
+            | TileKind::Pulse
+            | TileKind::Inbox
+            | TileKind::Headlines
             | TileKind::Blank => None,
         };
         let title = match (kind, &chat_tile) {
@@ -139,8 +162,12 @@ pub(crate) fn draw_rice(
                 | TileKind::Music
                 | TileKind::Clock
                 | TileKind::Visualizer
-                | TileKind::Presence
                 | TileKind::Lobby
+                | TileKind::Activity
+                | TileKind::Friends
+                | TileKind::Pulse
+                | TileKind::Inbox
+                | TileKind::Headlines
                 | TileKind::Blank,
                 _,
             ) => kind.label().to_string(),
@@ -158,8 +185,12 @@ pub(crate) fn draw_rice(
             | TileKind::Music
             | TileKind::Clock
             | TileKind::Visualizer
-            | TileKind::Presence
             | TileKind::Lobby
+            | TileKind::Activity
+            | TileKind::Friends
+            | TileKind::Pulse
+            | TileKind::Inbox
+            | TileKind::Headlines
             | TileKind::Blank => None,
         };
         let keys = tile_keys(*kind, &view);
@@ -175,6 +206,8 @@ pub(crate) fn draw_rice(
         if inner.width == 0 || inner.height == 0 {
             continue;
         }
+        // List tiles read better off the border: one column each side.
+        let padded = pad_sides(inner);
         match kind {
             TileKind::Bonsai => draw_bonsai_tile(frame, inner, view.bonsai, view.wall_tick),
             TileKind::Aquarium => {
@@ -182,13 +215,50 @@ pub(crate) fn draw_rice(
             }
             TileKind::Pet => draw_pet_tile(frame, inner, view.pet_strip.as_ref(), neighbours),
             TileKind::Chat => draw_chat_tile(frame, inner, chat_tile, terminal_images),
-            TileKind::Music => draw_music_tile(frame, inner, &view),
+            TileKind::Music => draw_music_tile(
+                frame,
+                inner,
+                &view.track,
+                &view.station,
+                view.wall_tick,
+                view.eq_state,
+            ),
             TileKind::Clock => draw_clock_tile(frame, inner, &view),
             TileKind::Visualizer => {
                 draw_visualizer_tile(frame, inner, view.wall_tick, view.eq_state)
             }
-            TileKind::Presence => draw_presence_tile(frame, inner, &view),
-            TileKind::Lobby => draw_lobby_tile(frame, inner, view.daily, view.lobby_glow),
+            TileKind::Lobby => draw_lobby_tile(frame, padded, view.daily, view.lobby_glow),
+            TileKind::Activity => {
+                draw_activity_tile(frame, padded, view.activity, view.active_friends)
+            }
+            TileKind::Friends => {
+                draw_friends_tile(frame, padded, view.active_friends, view.peer_statuses)
+            }
+            TileKind::Pulse => draw_pulse_tile(
+                frame,
+                padded,
+                &PulseView {
+                    online: view.online_count,
+                    chips: view.chip_balance,
+                    mentions: view.mentions_unread,
+                    friends: view.active_friends.len(),
+                    care: view.care,
+                },
+            ),
+            TileKind::Inbox => draw_inbox_tile(
+                frame,
+                pad_right(inner),
+                &view.inbox,
+                zen.inbox_selected,
+                focused,
+            ),
+            TileKind::Headlines => draw_headlines_tile(
+                frame,
+                pad_right(inner),
+                &view.headlines,
+                zen.headlines_selected,
+                focused,
+            ),
             TileKind::Blank => draw_blank_tile(frame, inner, focused),
         }
     }
@@ -231,9 +301,15 @@ fn draw_kind_picker(frame: &mut Frame, area: Rect, zen: &ZenState) {
     frame.render_widget(block, popup);
 
     let current = zen.focused_kind();
+    // A short page shows a window of the kinds that follows the selection;
+    // the blank and the hint keep their two rows.
+    let visible = (inner.height as usize).saturating_sub(2).max(1);
+    let first = (selected + 1).saturating_sub(visible);
     let mut lines: Vec<Line<'static>> = TileKind::ALL
         .iter()
         .enumerate()
+        .skip(first)
+        .take(visible)
         .map(|(index, kind)| {
             let picked = index == selected;
             let allowed = zen.kind_allowed(*kind);
@@ -293,7 +369,13 @@ fn tile_keys(kind: TileKind, view: &ZenView<'_>) -> &'static [(&'static str, &'s
             ("v1-5", "tune"),
         ],
         TileKind::Lobby => &[("ctrl+g", "open"), ("`", "toggle")],
-        TileKind::Clock | TileKind::Visualizer | TileKind::Presence => &[],
+        TileKind::Inbox => &[("jk", "pick"), ("enter", "open")],
+        TileKind::Headlines => &[("jk", "pick"), ("enter", "copy")],
+        TileKind::Clock
+        | TileKind::Visualizer
+        | TileKind::Activity
+        | TileKind::Friends
+        | TileKind::Pulse => &[],
         TileKind::Blank => &[],
     }
 }
@@ -633,43 +715,43 @@ fn draw_chat_tile(
     }
 }
 
-fn draw_music_tile(frame: &mut Frame, area: Rect, view: &ZenView<'_>) {
-    if area.height < 2 {
+/// Track and station always sit on the tile's last two rows, the station
+/// first to go when the tile is a single row. The visualizer takes every
+/// row above them. The keys are on the title.
+fn draw_music_tile(
+    frame: &mut Frame,
+    area: Rect,
+    track: &str,
+    station: &str,
+    wall_tick: usize,
+    eq_state: EqState,
+) {
+    if area.height == 0 {
         return;
     }
-    let dim = Style::default().fg(theme::TEXT_DIM());
-    // Track and station, one row each, the station first to go when the
-    // tile is short. The equalizer takes what is left, up to three. The
-    // keys are on the title.
     let text_rows: u16 = area.height.min(2);
-    let eq_rows = area.height.saturating_sub(text_rows).min(3);
-    let total = eq_rows + text_rows;
-    let top = area.y + area.height.saturating_sub(total) / 2;
+    let eq_rows = area.height - text_rows;
     if eq_rows > 0 {
-        render_eq(
+        draw_visualizer_tile(
             frame,
-            Rect::new(area.x, top, area.width, eq_rows),
-            view.wall_tick,
-            view.eq_state,
+            Rect::new(area.x, area.y, area.width, eq_rows),
+            wall_tick,
+            eq_state,
         );
     }
     let track = Line::from(vec![
         Span::styled("♪ ", Style::default().fg(theme::AMBER())),
-        Span::styled(
-            view.track.clone(),
-            Style::default().fg(theme::TEXT_BRIGHT()),
-        ),
+        Span::styled(track.to_string(), Style::default().fg(theme::TEXT_BRIGHT())),
     ])
     .centered();
-    let station = Line::from(Span::styled(view.station.clone(), dim)).centered();
+    let station = Line::from(Span::styled(
+        station.to_string(),
+        Style::default().fg(theme::TEXT_DIM()),
+    ))
+    .centered();
     frame.render_widget(
         Paragraph::new(vec![track, station]),
-        Rect::new(
-            area.x,
-            top + eq_rows,
-            area.width,
-            text_rows.min(area.height),
-        ),
+        Rect::new(area.x, area.y + eq_rows, area.width, text_rows),
     );
 }
 
@@ -724,7 +806,7 @@ fn draw_clock_tile(frame: &mut Frame, area: Rect, view: &ZenView<'_>) {
         lines.push(Line::from(""));
         lines.push(
             Line::from(Span::styled(
-                format!("{} · {} online", view.date, view.online_count),
+                view.date.clone(),
                 Style::default().fg(theme::TEXT_DIM()),
             ))
             .centered(),
@@ -739,121 +821,472 @@ fn draw_clock_tile(frame: &mut Frame, area: Rect, view: &ZenView<'_>) {
     frame.render_widget(Paragraph::new(padded), area);
 }
 
-const BLOCKS: [char; 9] = [' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
-
-fn bar_phase(seed: usize) -> f32 {
-    let hashed = (seed as u32).wrapping_mul(2_654_435_761);
-    (hashed >> 8) as f32 / (1u32 << 24) as f32 * std::f32::consts::TAU
-}
-
-/// Bar height in 0..=1 for one animation frame: the sidebar band's recipe
-/// at whatever height the tile allows.
-fn bar_unit(bar: usize, bars: usize, anim_frame: usize) -> f32 {
-    let t = anim_frame as f32;
-    let fast = (t * 0.51 + bar_phase(bar)).sin();
-    let slow = (t * 0.173 + bar_phase(bar + 101)).sin();
-    let swell = (t * 0.071 - bar as f32 * 0.9).sin();
-    let position = bar as f32 / bars.max(1) as f32;
-    let envelope = 1.0 - 0.35 * position;
-    ((0.42 + 0.30 * fast + 0.18 * slow + 0.10 * swell).max(0.04) * envelope).clamp(0.02, 1.0)
-}
-
+/// The visualizer tile is the equalizer at the tile's full height: the
+/// same bars and peak caps as the music stage, only taller.
 fn draw_visualizer_tile(frame: &mut Frame, area: Rect, wall_tick: usize, eq_state: EqState) {
     if area.width < 2 || area.height == 0 {
         return;
     }
-    if eq_state != EqState::Playing {
-        render_eq(frame, area, wall_tick, eq_state);
-        return;
-    }
-    let anim_frame = wall_tick / 2;
-    let width = area.width as usize;
-    let height = area.height as usize;
-    let bars = width.div_ceil(2);
-    let subcells = height * 8;
-    let levels: Vec<usize> = (0..bars)
-        .map(|b| ((bar_unit(b, bars, anim_frame) * subcells as f32) as usize).clamp(1, subcells))
-        .collect();
-    let mut lines = Vec::with_capacity(height);
-    for row in 0..height {
-        // Row 0 is the top; a cell is full when the bar reaches past it.
-        let cell_bottom = (height - 1 - row) * 8;
-        let mut spans = Vec::with_capacity(width);
-        let mut text = String::with_capacity(width);
-        for col in 0..width {
-            if col % 2 == 1 {
-                text.push(' ');
-                continue;
-            }
-            let level = levels[col / 2];
-            let filled = level.saturating_sub(cell_bottom).min(8);
-            text.push(BLOCKS[filled]);
+    let dance = match eq_state {
+        EqState::Live(live) => Dance::Live(live),
+        EqState::Ambient => Dance::Ambient,
+        EqState::Muted | EqState::Unpaired => {
+            render_eq(frame, area, wall_tick, eq_state);
+            return;
         }
-        let position = row as f32 / height.max(1) as f32;
-        let color = if position < 0.25 {
-            theme::AMBER_GLOW()
-        } else if position < 0.6 {
-            theme::AMBER()
-        } else {
-            theme::AMBER_DIM()
-        };
-        spans.push(Span::styled(text, Style::default().fg(color)));
-        lines.push(Line::from(spans));
-    }
+    };
+    let lines = dance_lines(dance, wall_tick, area.width as usize, area.height as usize);
     frame.render_widget(Paragraph::new(lines), area);
 }
 
-fn draw_presence_tile(frame: &mut Frame, area: Rect, view: &ZenView<'_>) {
+/// The #lounge activity feed as a list: newest on top, one event a row with
+/// its age flush right, a friend's line in the friend color.
+fn draw_activity_tile(
+    frame: &mut Frame,
+    area: Rect,
+    entries: &[ActivityTickerEntry],
+    friends: &[ActiveFriend],
+) {
+    if entries.is_empty() {
+        draw_centered_note(
+            frame,
+            area,
+            &["quiet for now", "wins, joins, and crowns land here"],
+        );
+        return;
+    }
+    let width = area.width as usize;
+    let lines: Vec<Line<'static>> = entries
+        .iter()
+        .take(area.height as usize)
+        .map(|entry| {
+            let about_a_friend = friends
+                .iter()
+                .any(|friend| names_actor(&entry.text, &friend.username));
+            let style = if about_a_friend {
+                Style::default().fg(theme::SUCCESS())
+            } else {
+                Style::default().fg(theme::TEXT_DIM())
+            };
+            stamped_row(
+                vec![Span::styled(entry.text.clone(), style)],
+                format_relative_time_short(entry.at),
+                width,
+            )
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(lines), area);
+}
+
+/// Whether a feed line is about `username`: feed lines open with the name.
+fn names_actor(text: &str, username: &str) -> bool {
+    text.strip_prefix(username)
+        .is_some_and(|rest| rest.starts_with(' '))
+}
+
+/// Connected friends, the most recent login first: the name, their
+/// `/status` when set, their audio source, and how long they have been on.
+fn draw_friends_tile(
+    frame: &mut Frame,
+    area: Rect,
+    friends: &[ActiveFriend],
+    peer_statuses: &HashMap<Uuid, String>,
+) {
+    if friends.is_empty() {
+        draw_centered_note(frame, area, &["no friends online"]);
+        return;
+    }
+    let width = area.width as usize;
+    let now = Instant::now();
     let dim = Style::default().fg(theme::TEXT_DIM());
-    let mut lines = vec![
-        Line::from(vec![
-            Span::styled(
-                view.online_count.to_string(),
-                Style::default()
-                    .fg(theme::AMBER_GLOW())
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" online", dim),
-        ])
-        .centered(),
+    let lines: Vec<Line<'static>> = friends
+        .iter()
+        .take(area.height as usize)
+        .map(|friend| {
+            let mut spans = vec![
+                Span::styled("● ", Style::default().fg(theme::SUCCESS())),
+                Span::styled(
+                    friend.username.clone(),
+                    Style::default().fg(theme::TEXT_BRIGHT()),
+                ),
+            ];
+            if let Some(badge) = peer_statuses.get(&friend.user_id) {
+                spans.push(Span::styled(
+                    format!("  {badge}"),
+                    Style::default().fg(theme::AMBER()),
+                ));
+            }
+            spans.push(Span::styled(
+                format!("  ♪ {}", audio_source_word(friend.audio_source)),
+                dim,
+            ));
+            stamped_row(
+                spans,
+                compact_elapsed(now.saturating_duration_since(friend.online_since)),
+                width,
+            )
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(lines), area);
+}
+
+fn audio_source_word(source: AudioSource) -> &'static str {
+    match source {
+        AudioSource::Youtube => "youtube",
+        AudioSource::Radio => "radio",
+        AudioSource::Icecast => "icecast",
+    }
+}
+
+fn compact_elapsed(elapsed: Duration) -> String {
+    let secs = elapsed.as_secs();
+    if secs < 60 {
+        "now".to_string()
+    } else if secs < 3_600 {
+        format!("{}m", secs / 60)
+    } else if secs < 86_400 {
+        format!("{}h", secs / 3_600)
+    } else {
+        format!("{}d", secs / 86_400)
+    }
+}
+
+/// What the Pulse tile draws.
+pub(crate) struct PulseView {
+    pub online: usize,
+    pub chips: i64,
+    pub mentions: i64,
+    pub friends: usize,
+    pub care: Care,
+}
+
+/// Today's care for one companion: tended, still due, or not owned.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Chore {
+    Done,
+    Due,
+    NotOwned,
+}
+
+impl Chore {
+    pub(crate) fn of(owned: bool, done_today: bool) -> Self {
+        match (owned, done_today) {
+            (false, _) => Chore::NotOwned,
+            (true, true) => Chore::Done,
+            (true, false) => Chore::Due,
+        }
+    }
+}
+
+/// The three once-a-day chores Pulse's care row names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Care {
+    pub bonsai: Chore,
+    pub tank: Chore,
+    pub pet: Chore,
+}
+
+/// The numbers worth a glance, one `label  value` row each and every row
+/// always drawn, zero included: people online, your chips, unread mentions
+/// (the mention color once there are some), friends online, and today's
+/// care, each companion green once tended, amber while due, faint when not
+/// owned. A short tile keeps the top rows; the block sits centered.
+fn draw_pulse_tile(frame: &mut Frame, area: Rect, pulse: &PulseView) {
+    use crate::app::common::primitives::thousands;
+
+    let bright = Style::default()
+        .fg(theme::AMBER_GLOW())
+        .add_modifier(Modifier::BOLD);
+    let mentions_style = if pulse.mentions > 0 {
+        Style::default()
+            .fg(theme::MENTION())
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(theme::TEXT_DIM())
+    };
+    let chore = |name: &'static str, chore: Chore| {
+        let color = match chore {
+            Chore::Done => theme::SUCCESS(),
+            Chore::Due => theme::AMBER(),
+            Chore::NotOwned => theme::TEXT_FAINT(),
+        };
+        Span::styled(name, Style::default().fg(color))
+    };
+    let rows: [(&str, Vec<Span<'static>>); 5] = [
+        (
+            "online",
+            vec![Span::styled(pulse.online.to_string(), bright)],
+        ),
+        ("chips", vec![Span::styled(thousands(pulse.chips), bright)]),
+        (
+            "mentions",
+            vec![Span::styled(pulse.mentions.to_string(), mentions_style)],
+        ),
+        (
+            "friends",
+            vec![Span::styled(pulse.friends.to_string(), bright)],
+        ),
+        (
+            "care",
+            vec![
+                chore("bonsai", pulse.care.bonsai),
+                Span::raw(" "),
+                chore("tank", pulse.care.tank),
+                Span::raw(" "),
+                chore("pet", pulse.care.pet),
+            ],
+        ),
     ];
-    if !view.friends.is_empty() {
-        lines.push(Line::from(""));
-        lines.push(
-            Line::from(Span::styled(
-                view.friends.join(" · "),
-                Style::default().fg(theme::SUCCESS()),
-            ))
-            .centered(),
+
+    // A wide tile keeps the block narrow and centered, so every label stays
+    // within reach of its value.
+    let width = area.width.min(PULSE_MAX_WIDTH);
+    let block = Rect::new(
+        area.x + (area.width - width) / 2,
+        area.y,
+        width,
+        area.height,
+    );
+    let height = area.height as usize;
+    let top_pad = height.saturating_sub(rows.len()) / 2;
+    let mut lines: Vec<Line<'static>> = vec![Line::from(""); top_pad];
+    lines.extend(
+        rows.into_iter()
+            .take(height)
+            .map(|(label, value)| stat_row(label, value, width as usize)),
+    );
+    frame.render_widget(Paragraph::new(lines), block);
+}
+
+/// The widest the Pulse block grows: past this a label drifts too far
+/// from its value to read as one row.
+const PULSE_MAX_WIDTH: u16 = 32;
+
+/// `area` less one column on each side, when it has columns to spare.
+fn pad_sides(area: Rect) -> Rect {
+    if area.width <= 2 {
+        return area;
+    }
+    Rect::new(area.x + 1, area.y, area.width - 2, area.height)
+}
+
+/// `area` less its last column. For the selectable lists (Inbox,
+/// Headlines): their one-column row marker is the left padding, so the
+/// text still sits one column in and the selection bar has a place to go.
+fn pad_right(area: Rect) -> Rect {
+    if area.width <= 1 {
+        return area;
+    }
+    Rect::new(area.x, area.y, area.width - 1, area.height)
+}
+
+/// `label` dim on the left, `value` flush right; the label gives way first
+/// when the tile is too narrow for both.
+fn stat_row(label: &str, value: Vec<Span<'static>>, width: usize) -> Line<'static> {
+    let value_width: usize = value.iter().map(|span| span.content.width()).sum();
+    let label = fit(label, width.saturating_sub(value_width + 1));
+    let pad = width.saturating_sub(label.width() + value_width);
+    let mut spans = vec![
+        Span::styled(label, Style::default().fg(theme::TEXT_DIM())),
+        Span::raw(" ".repeat(pad)),
+    ];
+    spans.extend(value);
+    Line::from(spans)
+}
+
+/// Unread DMs, then mentions. The focused tile marks its selected row;
+/// Enter opens that row in the page's first chat tile (`input.rs`).
+fn draw_inbox_tile(
+    frame: &mut Frame,
+    area: Rect,
+    rows: &[InboxRow],
+    selected: usize,
+    focused: bool,
+) {
+    if rows.is_empty() {
+        draw_centered_note(
+            frame,
+            area,
+            &["all caught up", "mentions and unread DMs land here"],
         );
+        return;
     }
-    if let Some(status) = view.status {
-        lines.push(Line::from(""));
-        lines.push(
-            Line::from(Span::styled(
-                format!("{} {}", status.glyph(), status.word()),
-                Style::default().fg(theme::AMBER()),
-            ))
-            .centered(),
+    let width = area.width as usize;
+    let visible = area.height as usize;
+    let selected = selected.min(rows.len() - 1);
+    let first = (selected + 1).saturating_sub(visible);
+    let amber = Style::default().fg(theme::AMBER());
+    let faint = Style::default().fg(theme::TEXT_FAINT());
+    let lines: Vec<Line<'static>> = rows
+        .iter()
+        .enumerate()
+        .skip(first)
+        .take(visible)
+        .map(|(index, row)| {
+            let marked = focused && index == selected;
+            let marker = Span::styled(if marked { "▌" } else { " " }, amber);
+            let emphasis = |style: Style| {
+                if marked {
+                    style.add_modifier(Modifier::BOLD)
+                } else {
+                    style
+                }
+            };
+            match row {
+                InboxRow::Dm { peer, unread, .. } => stamped_row(
+                    vec![
+                        marker,
+                        Span::styled("✉ ", amber),
+                        Span::styled(
+                            format!("@{peer}"),
+                            emphasis(Style::default().fg(theme::TEXT_BRIGHT())),
+                        ),
+                    ],
+                    format!("{unread} new"),
+                    width,
+                ),
+                InboxRow::Mention {
+                    actor,
+                    room,
+                    preview,
+                    at,
+                    unread,
+                    ..
+                } => {
+                    let (name_color, preview_color) = if *unread {
+                        (theme::MENTION(), theme::TEXT())
+                    } else {
+                        (theme::TEXT_DIM(), theme::TEXT_DIM())
+                    };
+                    let place = match room {
+                        Some(slug) => format!(" in #{slug}: "),
+                        None => ": ".to_string(),
+                    };
+                    stamped_row(
+                        vec![
+                            marker,
+                            Span::styled(
+                                format!("@{actor}"),
+                                emphasis(Style::default().fg(name_color)),
+                            ),
+                            Span::styled(place, faint),
+                            Span::styled(preview.clone(), Style::default().fg(preview_color)),
+                        ],
+                        format_relative_time_short(*at),
+                        width,
+                    )
+                }
+            }
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(lines), area);
+}
+
+/// News articles and the viewer's RSS entries, newest first, two rows each:
+/// the title with its source and age, then the link. The focused tile marks
+/// its selected item and scrolls to keep it in view; Enter copies the link
+/// (`input.rs`).
+fn draw_headlines_tile(
+    frame: &mut Frame,
+    area: Rect,
+    rows: &[Headline],
+    selected: usize,
+    focused: bool,
+) {
+    if rows.is_empty() {
+        draw_centered_note(
+            frame,
+            area,
+            &["no headlines yet", "News and your RSS feeds land here"],
         );
+        return;
     }
-    if view.mentions_unread > 0 {
-        lines.push(Line::from(""));
-        lines.push(
-            Line::from(Span::styled(
-                format!("@{} unread", view.mentions_unread),
-                Style::default().fg(theme::MENTION()),
-            ))
-            .centered(),
-        );
+    let width = area.width as usize;
+    let faint = Style::default().fg(theme::TEXT_FAINT());
+    let amber = Style::default().fg(theme::AMBER());
+    let visible = (area.height as usize).div_ceil(2);
+    let selected = selected.min(rows.len() - 1);
+    let first = (selected + 1).saturating_sub(visible);
+    let lines: Vec<Line<'static>> = rows
+        .iter()
+        .enumerate()
+        .skip(first)
+        .take(visible)
+        .flat_map(|(index, row)| {
+            let marked = focused && index == selected;
+            let marker = if marked { "▌" } else { " " };
+            let title_style = if marked {
+                Style::default()
+                    .fg(theme::TEXT_BRIGHT())
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme::TEXT())
+            };
+            [
+                stamped_row(
+                    vec![
+                        Span::styled(marker, amber),
+                        Span::styled(row.title.clone(), title_style),
+                        Span::styled(format!(" · {}", row.source), faint),
+                    ],
+                    format_relative_time_short(row.at),
+                    width,
+                ),
+                Line::from(vec![
+                    Span::raw("   "),
+                    Span::styled(fit(&row.url, width.saturating_sub(3)), faint),
+                ]),
+            ]
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(lines), area);
+}
+
+/// One list row: `spans` from the left, cut with an ellipsis where the
+/// room runs out, and `stamp` flush right in faint.
+fn stamped_row(spans: Vec<Span<'static>>, stamp: String, width: usize) -> Line<'static> {
+    let stamp_width = stamp.width();
+    let budget = width.saturating_sub(stamp_width + 1);
+    let mut used = 0usize;
+    let mut out: Vec<Span<'static>> = Vec::with_capacity(spans.len() + 2);
+    for span in spans {
+        let room = budget.saturating_sub(used);
+        if room == 0 {
+            break;
+        }
+        let text = fit(&span.content, room);
+        used += text.width();
+        out.push(Span::styled(text, span.style));
     }
-    let top_pad = (area.height as usize).saturating_sub(lines.len()) / 2;
-    let mut padded = Vec::with_capacity(top_pad + lines.len());
-    for _ in 0..top_pad {
-        padded.push(Line::from(""));
+    out.push(Span::raw(
+        " ".repeat(width.saturating_sub(used + stamp_width)),
+    ));
+    out.push(Span::styled(
+        stamp,
+        Style::default().fg(theme::TEXT_FAINT()),
+    ));
+    Line::from(out)
+}
+
+/// `text` cut to `width` columns, ending in an ellipsis when it was cut.
+fn fit(text: &str, width: usize) -> String {
+    if text.width() <= width {
+        return text.to_string();
     }
-    padded.append(&mut lines);
-    frame.render_widget(Paragraph::new(padded), area);
+    let mut out = String::new();
+    let mut used = 0usize;
+    for ch in text.chars() {
+        let ch_width = ch.width().unwrap_or(0);
+        if used + ch_width + 1 > width {
+            break;
+        }
+        out.push(ch);
+        used += ch_width;
+    }
+    if width > 0 {
+        out.push('…');
+    }
+    out
 }
 
 fn draw_blank_tile(frame: &mut Frame, area: Rect, focused: bool) {

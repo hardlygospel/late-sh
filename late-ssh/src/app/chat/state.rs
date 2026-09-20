@@ -37,7 +37,10 @@ use crate::app::ai::translate::{TranslationEvent, TranslationOutcome, Translatio
 use crate::app::common::overlay::{Overlay, OverlayInk, OverlayLine, OverlaySpan};
 
 use crate::app::common::status::Status;
-use crate::app::common::{composer, mentions, primitives::Banner};
+use crate::app::common::{
+    composer, mentions,
+    primitives::{Banner, Screen},
+};
 use crate::app::help_modal::data::HelpTopic;
 use crate::app::notify::{Notification, Notifier};
 use crate::authz::Permissions;
@@ -199,6 +202,45 @@ impl PendingClipboardImageUpload {
 
     fn is_expired(&self) -> bool {
         self.requested_at.elapsed() >= CLIPBOARD_IMAGE_REQUEST_TIMEOUT
+    }
+}
+
+/// Whether a submitted `/` draft runs as a command. The Lounge composer is
+/// plain speech (`Disabled`); every other chat composer takes commands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ComposerCommands {
+    Enabled,
+    Disabled,
+}
+
+impl ComposerCommands {
+    pub fn for_screen(screen: Screen) -> Self {
+        match screen {
+            Screen::Clubhouse => Self::Disabled,
+            Screen::Dashboard
+            | Screen::Arcade
+            | Screen::Games
+            | Screen::Lateania
+            | Screen::Rebels
+            | Screen::Nethack
+            | Screen::Dcss
+            | Screen::Brogue
+            | Screen::Dopewars
+            | Screen::Bashquest
+            | Screen::Codekeep
+            | Screen::Usurper
+            | Screen::GreenDragon
+            | Screen::Darkroom
+            | Screen::Artboard
+            | Screen::Profiles
+            | Screen::Leaderboard
+            | Screen::Nightcap
+            | Screen::City
+            | Screen::Zen
+            | Screen::DailyMatch
+            | Screen::HouseTable
+            | Screen::Scratchpad => Self::Enabled,
+        }
     }
 }
 
@@ -460,6 +502,51 @@ pub(crate) enum RoomSlot {
     Discover,
     Showcase,
     Work,
+}
+
+/// Fixed ids for the synthetic Core entries a user can favorite (mentions,
+/// news, rss, browse rooms). They ride in `users.settings.favorite_room_ids`
+/// next to real room ids so the favorites list, its order, the picker sort,
+/// and the Core exclusion set stay one `Vec<Uuid>`. Real rooms are UUID v7;
+/// these carry a zero version nibble, so nothing generated can collide with
+/// them. These two functions are the only code that interprets the ids.
+const FAVORITE_ID_NOTIFICATIONS: Uuid = Uuid::from_u128(0x1a7e_0000_0000_0000_0000_0000_0000_0001);
+const FAVORITE_ID_NEWS: Uuid = Uuid::from_u128(0x1a7e_0000_0000_0000_0000_0000_0000_0002);
+const FAVORITE_ID_FEEDS: Uuid = Uuid::from_u128(0x1a7e_0000_0000_0000_0000_0000_0000_0003);
+const FAVORITE_ID_DISCOVER: Uuid = Uuid::from_u128(0x1a7e_0000_0000_0000_0000_0000_0000_0004);
+
+/// The favorites-list id of a synthetic entry, or `None` for a real room and
+/// for the synthetic entries that cannot be favorited.
+pub(crate) fn synthetic_favorite_id(slot: RoomSlot) -> Option<Uuid> {
+    match slot {
+        RoomSlot::Notifications => Some(FAVORITE_ID_NOTIFICATIONS),
+        RoomSlot::News => Some(FAVORITE_ID_NEWS),
+        RoomSlot::Feeds => Some(FAVORITE_ID_FEEDS),
+        RoomSlot::Discover => Some(FAVORITE_ID_DISCOVER),
+        RoomSlot::Room(_)
+        | RoomSlot::Cyberspace
+        | RoomSlot::CyberspaceNotifications
+        | RoomSlot::CyberspaceMail(_)
+        | RoomSlot::CyberspaceRoom(_)
+        | RoomSlot::Showcase
+        | RoomSlot::Work => None,
+    }
+}
+
+/// The synthetic entry a favorites-list id stands for, or `None` when the id
+/// is a real room's.
+pub(crate) fn synthetic_slot_for_favorite_id(id: Uuid) -> Option<RoomSlot> {
+    if id == FAVORITE_ID_NOTIFICATIONS {
+        Some(RoomSlot::Notifications)
+    } else if id == FAVORITE_ID_NEWS {
+        Some(RoomSlot::News)
+    } else if id == FAVORITE_ID_FEEDS {
+        Some(RoomSlot::Feeds)
+    } else if id == FAVORITE_ID_DISCOVER {
+        Some(RoomSlot::Discover)
+    } else {
+        None
+    }
 }
 
 /// Collapsible groupings of the room-list rail. Each maps to one section
@@ -963,6 +1050,11 @@ pub struct ChatState {
     /// because a won hit is put on the wire for the rest of that room, and
     /// by then the sender may have tabbed elsewhere.
     own_message_landed: Option<(Uuid, Uuid)>,
+    /// A send this session submitted just succeeded (`SendSucceeded` for a
+    /// request in `pending_send_notices`, never the same user's send from
+    /// another device), for the stage-4 breakthrough; consumed by
+    /// `deadchannel::haunt::svc` every tick.
+    own_send_succeeded: bool,
     /// A stage-2 hit off the wire (`ChatEvent::NameHit`) whose message is
     /// on screen: the message id and the wave seed. Consumed by
     /// `deadchannel::haunt::svc` every tick, which paints it.
@@ -1292,6 +1384,7 @@ impl ChatState {
             requested_haunt: None,
             requested_paper: None,
             own_message_landed: None,
+            own_send_succeeded: false,
             witnessed_hit_landed: None,
             pending_name_hits: HashMap::new(),
             requested_watch: None,
@@ -2072,6 +2165,10 @@ impl ChatState {
 
     pub(crate) fn take_own_message_landed(&mut self) -> Option<(Uuid, Uuid)> {
         self.own_message_landed.take()
+    }
+
+    pub(crate) fn take_own_send_succeeded(&mut self) -> bool {
+        std::mem::take(&mut self.own_send_succeeded)
     }
 
     pub(crate) fn take_witnessed_hit_landed(&mut self) -> Option<(Uuid, u64)> {
@@ -3009,6 +3106,9 @@ impl ChatState {
     }
 
     pub(crate) fn selected_favorite_room_id(&self) -> Option<Uuid> {
+        if let Some(id) = self.current_slot().and_then(synthetic_favorite_id) {
+            return Some(id);
+        }
         if self.synthetic_entry_selected() {
             return None;
         }
@@ -3441,8 +3541,21 @@ impl ChatState {
         self.open_overlay("Active Users", self.active_user_lines());
     }
 
-    pub fn submit_composer(&mut self, keep_open: bool, _from_dashboard: bool) -> Option<Banner> {
+    pub fn submit_composer(
+        &mut self,
+        keep_open: bool,
+        commands: ComposerCommands,
+    ) -> Option<Banner> {
         let body = self.composer.lines().join("\n").trim_end().to_string();
+
+        match (commands, is_command_draft(&body)) {
+            (ComposerCommands::Disabled, true) => {
+                return Some(Banner::error(
+                    "Commands are off in the Lounge, use them from Home",
+                ));
+            }
+            (ComposerCommands::Disabled, false) | (ComposerCommands::Enabled, _) => {}
+        }
 
         if body.trim() == "/binds" {
             self.clear_composer_after_submit();
@@ -5501,17 +5614,32 @@ impl ChatState {
     }
 
     pub fn active_friend_names(&self) -> Vec<String> {
+        self.active_friends()
+            .into_iter()
+            .map(|friend| friend.username)
+            .collect()
+    }
+
+    /// Connected friends, the most recent login first, then by name.
+    pub fn active_friends(&self) -> Vec<ActiveFriend> {
         let Some(active_users) = &self.active_users else {
             return Vec::new();
         };
         let active_users = active_users.lock_recover();
-        let mut friends: Vec<&ActiveUser> = self
+        let mut friends: Vec<ActiveFriend> = self
             .friend_user_ids
             .iter()
-            .filter_map(|id| active_users.get(id))
+            .filter_map(|id| {
+                active_users.get(id).map(|user: &ActiveUser| ActiveFriend {
+                    user_id: *id,
+                    username: user.username.clone(),
+                    audio_source: user.audio_source,
+                    online_since: user.last_login_at,
+                })
+            })
             .collect();
         friends.sort_by(|left, right| {
-            right.last_login_at.cmp(&left.last_login_at).then_with(|| {
+            right.online_since.cmp(&left.online_since).then_with(|| {
                 left.username
                     .bytes()
                     .map(|b| b.to_ascii_lowercase())
@@ -5519,9 +5647,6 @@ impl ChatState {
             })
         });
         friends
-            .into_iter()
-            .map(|user| user.username.clone())
-            .collect()
     }
 
     pub fn note_friend_join(&mut self, user_id: Uuid, username: &str) -> Option<Banner> {
@@ -5836,6 +5961,11 @@ impl ChatState {
                     user_id,
                     request_id,
                 } if self.user_id == user_id => {
+                    // Every session of this user hears every send; only a
+                    // request this session submitted is its own.
+                    if self.pending_send_notices.contains(&request_id) {
+                        self.own_send_succeeded = true;
+                    }
                     self.pending_send_notices.retain(|id| *id != request_id);
                     self.last_own_send_at = Some(std::time::Instant::now());
                     banner = Some(Banner::success("Message sent"));
@@ -6925,9 +7055,18 @@ pub struct ActivityTickerEntry {
     pub at: DateTime<Utc>,
 }
 
-/// The ticker queue length: enough that packing left to right always fills
-/// the row on any sane terminal width, without hoarding history.
-const ACTIVITY_TICKER_CAP: usize = 10;
+/// A connected friend, as the Zen Friends tile draws them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ActiveFriend {
+    pub user_id: Uuid,
+    pub username: String,
+    pub audio_source: late_core::models::user::AudioSource,
+    pub online_since: Instant,
+}
+
+/// The ticker queue length: enough to fill the one-row ticker on any sane
+/// width and a tall Zen Activity tile, without hoarding history.
+const ACTIVITY_TICKER_CAP: usize = 40;
 
 /// Insert into the newest-first ticker queue, deduped by message id (tails
 /// and snapshots replay the same lines), capped at `ACTIVITY_TICKER_CAP`.
@@ -7096,6 +7235,19 @@ pub(crate) fn visual_order_for_rooms<U: UsernameResolver + ?Sized>(
     // then only appends to `order` when the section is expanded.
     let favorites_collapsed = collapsed_sections.contains(&RoomSection::Favorites);
     for favorite_id in favorite_room_ids {
+        // A favorited synthetic entry takes its slot here and is skipped by
+        // Core below through the same `pushed_rooms` set the rooms use. RSS
+        // without feeds has no row anywhere, so it is not marked pushed.
+        match synthetic_slot_for_favorite_id(*favorite_id) {
+            Some(RoomSlot::Feeds) if !feeds_available => continue,
+            Some(slot) => {
+                if pushed_rooms.insert(*favorite_id) && !favorites_collapsed {
+                    order.push(slot);
+                }
+                continue;
+            }
+            None => {}
+        }
         if rooms.iter().any(|(room, _)| {
             room.id == *favorite_id
                 && is_chat_list_room(room)
@@ -7121,9 +7273,13 @@ pub(crate) fn visual_order_for_rooms<U: UsernameResolver + ?Sized>(
         }
     }
     if !core_collapsed {
-        order.push(RoomSlot::Notifications);
-        order.push(RoomSlot::News);
-        if feeds_available {
+        if !pushed_rooms.contains(&FAVORITE_ID_NOTIFICATIONS) {
+            order.push(RoomSlot::Notifications);
+        }
+        if !pushed_rooms.contains(&FAVORITE_ID_NEWS) {
+            order.push(RoomSlot::News);
+        }
+        if feeds_available && !pushed_rooms.contains(&FAVORITE_ID_FEEDS) {
             order.push(RoomSlot::Feeds);
         }
     }
@@ -7145,16 +7301,18 @@ pub(crate) fn visual_order_for_rooms<U: UsernameResolver + ?Sized>(
     {
         order.push(RoomSlot::Room(room.id));
     }
-    if !core_collapsed {
+    if !core_collapsed && !pushed_rooms.contains(&FAVORITE_ID_DISCOVER) {
         // Discover ("browse rooms") lives at the bottom of Core.
         order.push(RoomSlot::Discover);
     }
 
-    // Stream: one row per registered "watch me" stream, directly under Core.
-    // The section exists only while somebody is streaming. Stream rooms are
-    // `kind='game'` so they can never leak into Channels/DMs below.
+    // Stream: one row per live "watch me" stream, directly under Core. A
+    // pending stream (`/golive` typed, no media yet) has nothing to watch and
+    // stays off the rail. The section exists only while somebody is live.
+    // Stream rooms are `kind='game'` so they can never leak into Channels/DMs
+    // below.
     let stream_collapsed = collapsed_sections.contains(&RoomSection::Stream);
-    for stream in live_streams {
+    for stream in live_streams.iter().filter(|stream| stream.live) {
         if pushed_rooms.insert(stream.room_id) && !stream_collapsed {
             order.push(RoomSlot::Room(stream.room_id));
         }
@@ -7895,6 +8053,17 @@ pub(crate) fn cup_art(kind: CupKind, variant: u8) -> String {
         CupKind::Tea => "  \\___/",
     };
     format!("{steam}\n{cup}")
+}
+
+/// Whether a draft is a command attempt rather than speech: its first word
+/// leads with `/`. A bare `/` and a `//` aside are speech, as they are to
+/// `unknown_slash_command`. Multi-line drafts count, since several command
+/// parsers take a body that runs over lines.
+fn is_command_draft(input: &str) -> bool {
+    match input.split_whitespace().next() {
+        Some("/") | Some("//") | None => false,
+        Some(word) => word.starts_with('/'),
+    }
 }
 
 fn unknown_slash_command(input: &str) -> Option<&str> {

@@ -4992,7 +4992,9 @@ mod gild {
 
 #[tokio::test]
 async fn first_contact_invitation_sends_one_dm_and_claims_once() {
-    use crate::app::deadchannel::haunt::state::{VOICE_FINGERPRINT, VOICE_USERNAME};
+    use crate::app::deadchannel::haunt::state::{
+        InvitationClaim, VOICE_FINGERPRINT, VOICE_USERNAME,
+    };
 
     let test_db = new_test_db().await;
     let service = ChatService::new(
@@ -5001,10 +5003,30 @@ async fn first_contact_invitation_sends_one_dm_and_claims_once() {
     );
     let target = create_test_user(&test_db.db, "first-contact-target").await;
 
-    // Two racing requests (two devices noticing the due date): the claim
-    // lets exactly one DM through.
-    service.send_first_contact_invitation_task(target.id, target.username.clone());
-    service.send_first_contact_invitation_task(target.id, target.username.clone());
+    // Two racing requests (two devices whose sends came due at once): the
+    // claim lets exactly one of them play the scene and one DM through.
+    let first = service.send_first_contact_invitation_task(
+        target.id,
+        target.username.clone(),
+        Duration::ZERO,
+    );
+    let second = service.send_first_contact_invitation_task(
+        target.id,
+        target.username.clone(),
+        Duration::ZERO,
+    );
+    let answers = [
+        first.await.expect("first answer"),
+        second.await.expect("second answer"),
+    ];
+    assert_eq!(
+        answers
+            .iter()
+            .filter(|answer| **answer == InvitationClaim::Won)
+            .count(),
+        1,
+        "exactly one session may break through: {answers:?}"
+    );
 
     let client = test_db.db.get().await.expect("db client");
     crate::test_helpers::wait_until(
@@ -5144,6 +5166,44 @@ async fn deadchannel_join_requires_the_invitation() {
             .expect("runner still there");
     assert_eq!(again.id, runner.id);
     assert_eq!(again.look, runner.look);
+
+    // Leaving closes the gate: the runner drops out of the directory every
+    // replica reads, so `App::is_runner` goes false on all of them, and the
+    // portrait goes with it.
+    service.leave_room_task(user.id, room_id, "deadchannel".to_string());
+    match timeout(Duration::from_secs(2), events.recv())
+        .await
+        .expect("event timeout")
+        .expect("event")
+    {
+        ChatEvent::RoomLeft { user_id, .. } => assert_eq!(user_id, user.id),
+        other => panic!("expected RoomLeft, got {other:?}"),
+    }
+    assert!(
+        late_core::models::deadchannel_runner::DeadchannelRunner::list_looks(&client)
+            .await
+            .expect("list looks")
+            .is_empty()
+    );
+
+    // The character waits: rejoining gets the same face back, not a new one.
+    service.open_public_room_task(user.id, "deadchannel".to_string());
+    match timeout(Duration::from_secs(2), events.recv())
+        .await
+        .expect("event timeout")
+        .expect("event")
+    {
+        ChatEvent::RoomJoined { user_id, .. } => assert_eq!(user_id, user.id),
+        other => panic!("expected RoomJoined, got {other:?}"),
+    }
+    let returned =
+        late_core::models::deadchannel_runner::DeadchannelRunner::find_by_user(&client, user.id)
+            .await
+            .expect("find returned runner")
+            .expect("runner came back");
+    assert_eq!(returned.id, runner.id);
+    assert_eq!(returned.look, runner.look);
+    assert!(returned.left_at.is_none());
 }
 
 #[tokio::test]
@@ -5172,7 +5232,7 @@ async fn first_contact_voice_ensure_is_idempotent_and_claims_the_name() {
 
 #[tokio::test]
 async fn first_contact_invitation_claim_survives_a_failed_send() {
-    use crate::app::deadchannel::haunt::state::VOICE_USERNAME;
+    use crate::app::deadchannel::haunt::state::{InvitationClaim, VOICE_USERNAME};
 
     let test_db = new_test_db().await;
     let service = ChatService::new(
@@ -5185,11 +5245,12 @@ async fn first_contact_invitation_claim_survives_a_failed_send() {
     let _squatter = create_test_user(&test_db.db, VOICE_USERNAME).await;
     let target = create_test_user(&test_db.db, "fc-claim-target").await;
 
-    service.send_first_contact_invitation_task(target.id, target.username.clone());
-
-    // The failure is silent from out here; give the task time to run its
-    // course (a negative assertion, like the racing-duplicate check above).
-    sleep(Duration::from_millis(400)).await;
+    // The asking session hears the failure, so nothing plays there.
+    let answer = service
+        .send_first_contact_invitation_task(target.id, target.username.clone(), Duration::ZERO)
+        .await
+        .expect("answer");
+    assert_eq!(answer, InvitationClaim::Failed);
 
     // The once-ever claim must not be burned by a DM that never sent: the
     // stamp stays absent so a later session retries the invitation.
