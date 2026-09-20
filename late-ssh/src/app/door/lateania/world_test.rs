@@ -1219,6 +1219,120 @@ fn the_archipelago_is_mazes_and_caverns_with_a_boss_per_isle() {
 }
 
 #[test]
+fn the_archipelago_ramps_past_the_last_crown_instead_of_sitting_flat_at_the_cap() {
+    // The isles are the one land allowed to out-hit Kaethyr Ascendant: they
+    // are portal-reachable, ungated, and run past the end of the crown ladder
+    // rather than sitting on a rung of it. What they are not allowed to be is
+    // flat. A tier of `isle + 52` put every mob on all twenty islands at
+    // Lv100, hitting for up to 1187 against the last crown's 397 - twenty
+    // islands of identical ceiling and no reason to sail past the first one.
+    // Assert the whole ladder rather than its endpoints, because the failure
+    // that shipped was in the middle of it and both endpoints looked right.
+    use super::super::archipelago as arch;
+    use super::super::classes::Class;
+    let world = seed_world();
+    let ascendant = CROWNS.last().expect("the ladder ends on a crown");
+
+    let boss_levels: Vec<i32> = (0..arch::ISLAND_COUNT)
+        .map(|i| {
+            let base = arch::island_entrance(i);
+            let end = base + arch::ARCH_STRIDE;
+            world
+                .spawns
+                .iter()
+                .find(|s| s.boss && (base..end).contains(&s.home))
+                .expect("every island has a boss")
+                .level()
+        })
+        .collect();
+    let expected: Vec<i32> = (0..arch::ISLAND_COUNT)
+        .map(|i| (82 + i as i32).min(Class::MAX_LEVEL))
+        .collect();
+    assert_eq!(
+        boss_levels, expected,
+        "one displayed level per island from Lv82 to the cap; re-bless against CONTEXT.md §9"
+    );
+    assert!(
+        boss_levels[0] > ascendant.level,
+        "even the shallowest island should read past {} (Lv{})",
+        ascendant.name,
+        ascendant.level
+    );
+
+    // Regulars ramp too, and no island is flat against the one before it.
+    let trash: Vec<Vec<i32>> = (0..arch::ISLAND_COUNT)
+        .map(|i| {
+            let base = arch::island_entrance(i);
+            let end = base + arch::ARCH_STRIDE;
+            world
+                .spawns
+                .iter()
+                .filter(|s| !s.boss && (base..end).contains(&s.home))
+                .map(|s| s.level())
+                .collect()
+        })
+        .collect();
+    let floors: Vec<i32> = trash
+        .iter()
+        .map(|lv| *lv.iter().min().expect("every island is populated"))
+        .collect();
+    let ceilings: Vec<i32> = trash
+        .iter()
+        .map(|lv| *lv.iter().max().expect("every island is populated"))
+        .collect();
+    assert_eq!(
+        (floors[0], *ceilings.last().expect("twenty islands")),
+        (80, Class::MAX_LEVEL),
+        "the regulars should run from just past Kaelmyr's Lv78 ceiling to the cap"
+    );
+    assert!(
+        floors.windows(2).all(|w| w[0] <= w[1]),
+        "an island's regulars should never read below the island before it, got {floors:?}"
+    );
+    assert!(
+        floors.last() > floors.first(),
+        "the regular ladder should climb across the isles, got {floors:?}"
+    );
+}
+
+#[test]
+fn the_archipelago_is_the_fastest_ground_in_the_game_to_reach_the_cap_on() {
+    // The isles' whole draw is that they are where you climb to Lv100, so they
+    // have to out-pay the deepest crowned land per point of health chewed
+    // through. They used to lose to it badly: doubled health for half again
+    // the xp, which made the deadliest ground in the game also the slowest to
+    // level on. Health is the cost of a kill and xp is the price paid for it,
+    // so the ratio is the thing to pin - raising xp alone says nothing if the
+    // health it is paid against moved too. Gold follows xp (`gold_for_kill`).
+    let world = seed_world();
+    let rate = |f: &dyn Fn(&MobSpawn) -> bool| -> f64 {
+        let xp: i64 = world
+            .spawns
+            .iter()
+            .filter(|s| f(s))
+            .map(|s| i64::from(s.xp))
+            .sum();
+        let hp: i64 = world
+            .spawns
+            .iter()
+            .filter(|s| f(s))
+            .map(|s| i64::from(s.max_hp))
+            .sum();
+        assert!(hp > 0, "the filter should match a populated land");
+        xp as f64 / hp as f64
+    };
+    let arch_trash =
+        rate(&|s| !s.boss && s.id >= ARCH_SPAWN_ID_START && s.id < LAKES_SPAWN_ID_START);
+    let kaelmyr_trash =
+        rate(&|s| !s.boss && s.id >= KAELMYR_SPAWN_ID_START && s.id < ARCH_SPAWN_ID_START);
+    assert!(
+        arch_trash > kaelmyr_trash * 5.0 / 4.0,
+        "the isles should pay at least a quarter more xp per point of health than Kaelmyr, \
+         got {arch_trash:.2} against {kaelmyr_trash:.2}"
+    );
+}
+
+#[test]
 fn overworld_adds_one_hundred_new_rooms() {
     let world = seed_world();
     // The overworld occupies ids 600..2000; the Frontier starts at 2000.
@@ -2151,12 +2265,15 @@ fn a_wildbound_apex_boss_pays_off_its_own_biome_not_the_frontier_crown() {
     // catalog's top table, which meant the 1500hp Duskmire boss dropped - on
     // every kill, since `roll_loot` never rolls for a boss - what the King Who
     // Was Promised Nothing guards at the end of twenty Frontier zones.
-    use super::super::items::{FRONTIER_TIERS, frontier_loot};
+    use super::super::items::{MARKET_TIER_MAX, realm_loot};
     let world = seed_world();
+    // Resolved against the whole shared ladder, not the Frontier catalog
+    // alone: the Scorched Flats charge 3960hp a regular and now draw from the
+    // Reaches, which the Frontier-only lookup this used to do could not name.
     let tier_of = |loot: &'static [u32]| {
-        (0..FRONTIER_TIERS)
-            .find(|t| frontier_loot(*t) == loot)
-            .expect("the Waste borrows the Frontier catalog, one tier per table")
+        (1..=MARKET_TIER_MAX)
+            .find(|t| realm_loot(*t) == loot)
+            .expect("the Waste draws from the shared realm ladder, one tier per table")
     };
 
     for (b, biome) in WILDBOUND_BIOMES.iter().enumerate() {
@@ -2182,13 +2299,13 @@ fn a_wildbound_apex_boss_pays_off_its_own_biome_not_the_frontier_crown() {
             biome.zone
         );
         assert!(
-            boss_tier < FRONTIER_TIERS - 1,
-            "the catalog's top table belongs to the Frontier's crown, not {} (tier {boss_tier})",
+            boss_tier < MARKET_TIER_MAX,
+            "the ladder's top table belongs to Kaelmyr's crown, not {} (tier {boss_tier})",
             boss.name
         );
         if let Some(next) = WILDBOUND_BIOMES.get(b + 1) {
             assert!(
-                boss_tier <= next.loot_base,
+                boss_tier <= next.loot_base as i32,
                 "{} should not out-pay the shallow end of {} (tier {}), got tier {boss_tier}",
                 boss.name,
                 next.zone,
@@ -2856,8 +2973,8 @@ fn the_world_pass_redistributes_grind_rates_but_never_rebalances_a_class() {
 fn region_atlas_yardstick() {
     let world = seed_world();
     println!(
-        "\n{:<34} {:>6} {:>9} {:>9} {:>6} {:>6}  {:<13} {}",
-        "region", "rooms", "trash lvl", "boss lvl", "bosses", "crowns", "kind", "reached by"
+        "\n{:<34} {:>6} {:>9} {:>9} {:>8} {:>7} {:>6} {:>6}  {:<13} reached by",
+        "region", "rooms", "trash lvl", "boss lvl", "trash hp", "xp/hp", "bosses", "crowns", "kind",
     );
     for &(name, lo, hi, kind, gateway) in REGIONS {
         let rooms = world
@@ -2889,8 +3006,32 @@ fn region_atlas_yardstick() {
             .iter()
             .filter(|s| s.boss && CROWNS.iter().any(|c| c.name == s.name))
             .count();
+        // Median regular health, and xp per point of it. Health is what a
+        // region charges for a kill and xp/hp is what it pays, so together
+        // they say whether a land's loot tier is earned or handed over: two
+        // regions at the same displayed level can be a factor of five apart
+        // on what it costs to clear them.
+        let mut hps: Vec<i32> = here.iter().filter(|s| !s.boss).map(|s| s.max_hp).collect();
+        hps.sort_unstable();
+        let (hp, rate) = match hps.len() {
+            0 => ("-".to_string(), "-".to_string()),
+            n => {
+                let med = hps[n / 2];
+                let xp: i64 = here
+                    .iter()
+                    .filter(|s| !s.boss)
+                    .map(|s| i64::from(s.xp))
+                    .sum();
+                let pool: i64 = here
+                    .iter()
+                    .filter(|s| !s.boss)
+                    .map(|s| i64::from(s.max_hp))
+                    .sum();
+                (med.to_string(), format!("{:.2}", xp as f64 / pool as f64))
+            }
+        };
         println!(
-            "{name:<34} {rooms:>6} {:>9} {:>9} {bosses:>6} {crowns:>6}  {kind:<13} {gateway}",
+            "{name:<34} {rooms:>6} {:>9} {:>9} {hp:>8} {rate:>7} {bosses:>6} {crowns:>6}  {kind:<13} {gateway}",
             band(false),
             band(true),
         );

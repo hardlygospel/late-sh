@@ -6151,23 +6151,40 @@ fn extend_archipelago(
             }
 
             let depth = dist[cell] as i32;
-            let (mob_name, behavior, boss_mob, hp, dmg) = if is_boss {
-                let base_hp = 1500 + tier * 240;
-                let base_dmg = 66 + tier * 6;
+            // xp rides in the tuple beside the health it is paid for. The two
+            // regular kinds sit on different health curves, so one shared xp
+            // line would pay them at different rates; what the Archipelago
+            // sells is xp per point of health, and that is the number this
+            // keeps honest (~1.41 for a regular, ~1.05 for a boss, against
+            // Kaelmyr's 0.93 and 0.68). This is the region's whole draw: it is
+            // the fastest ground in the game to climb to the cap on, which it
+            // was not before, being both the slowest and the deadliest.
+            let (mob_name, behavior, boss_mob, hp, dmg, xp) = if is_boss {
+                // One displayed level per island, Lv82 up to the cap. The apex
+                // islands are a longer, richer fight rather than a bigger one:
+                // they take the health and the xp, never the bite. Widening
+                // the bite there instead would put a cliff in the middle of
+                // the ramp, and past Lv80 `level_for_bite` extrapolates on the
+                // slope between the last two crowns, so a cliff in damage is a
+                // cliff in displayed level.
+                let base_hp = 15_000 + isle_n * 470;
+                let base_xp = 15_750 + isle_n * 495;
                 (
                     boss,
                     MobBehavior::Brute,
                     true,
                     if apex { base_hp * 5 / 4 } else { base_hp },
-                    if apex { base_dmg * 23 / 20 } else { base_dmg },
+                    348 + isle_n * 5,
+                    if apex { base_xp * 5 / 4 } else { base_xp },
                 )
             } else if degree == 1 {
                 (
                     mob_names[0],
                     MobBehavior::Ambusher,
                     false,
-                    860 + tier * 62 + depth * 6,
-                    58 + tier * 4 + depth,
+                    4600 + isle_n * 130 + depth * 14,
+                    278 + isle_n * 3 + depth * 3 / 4,
+                    6400 + isle_n * 182 + depth * 20,
                 )
             } else if degree >= 3 {
                 (
@@ -6178,8 +6195,9 @@ fn extend_archipelago(
                         MobBehavior::Summoner
                     },
                     false,
-                    940 + tier * 72 + depth * 6,
-                    60 + tier * 5 + depth,
+                    4900 + isle_n * 140 + depth * 14,
+                    286 + isle_n * 3 + depth * 3 / 4,
+                    6900 + isle_n * 196 + depth * 20,
                 )
             } else {
                 if rng.chance(35) {
@@ -6195,8 +6213,9 @@ fn extend_archipelago(
                     mob_names[2],
                     behavior,
                     false,
-                    860 + tier * 62 + depth * 6,
-                    58 + tier * 4 + depth,
+                    4600 + isle_n * 130 + depth * 14,
+                    278 + isle_n * 3 + depth * 3 / 4,
+                    6400 + isle_n * 182 + depth * 20,
                 )
             };
             let attack = match behavior {
@@ -6217,12 +6236,7 @@ fn extend_archipelago(
                 home: id,
                 max_hp: hp,
                 damage: dmg,
-                xp: if boss_mob {
-                    let base_xp = 760 + tier * 92;
-                    if apex { base_xp * 5 / 4 } else { base_xp }
-                } else {
-                    210 + tier * 40 + depth * 5
-                },
+                xp,
                 respawn_secs: if boss_mob { 600 } else { 90 },
                 loot: if boss_mob {
                     archipelago_boss_loot(isle)
@@ -7543,10 +7557,13 @@ fn band_of(id: u32) -> Band {
 /// (a regular dies in ~3 prepared ticks and needs 15+ to kill you, casters
 /// included since armor blunts a school only by a quarter; a zone boss ~8
 /// and ~14), so what their generators author is what is fielded;
-/// the Frontier's generator was re-sloped for that and its row is 1:1. The
-/// Archipelago keeps the old endgame multipliers on purpose: it is ungated,
-/// portal-reachable, and deadly by design. Crowns are re-fielded afterwards
-/// by `tune_crowns`, so nothing here decides what a crown is.
+/// the Frontier's generator was re-sloped for that and its row is 1:1, and
+/// the Archipelago's was too, for the same reason: it is ungated,
+/// portal-reachable and deadly by design, so the one land that runs past the
+/// end of the crown ladder is the one that can least afford a multiplier
+/// standing between what its generator says and what a player meets. Crowns
+/// are re-fielded afterwards by `tune_crowns`, so nothing here decides what a
+/// crown is.
 fn tune_spawn_balance(spawns: &mut [MobSpawn]) {
     for spawn in spawns {
         let band = band_of(spawn.id);
@@ -7561,8 +7578,14 @@ fn tune_spawn_balance(spawns: &mut [MobSpawn]) {
             (Band::Reaches, false) => (4, 3, 4, 5, 3, 2),
             (Band::Kaelmyr, true) => (5, 6, 4, 5, 4, 3),
             (Band::Kaelmyr, false) => (4, 5, 2, 3, 3, 2),
-            (Band::Archipelago, true) => (12, 5, 21, 10, 4, 3),
-            (Band::Archipelago, false) => (2, 1, 19, 10, 3, 2),
+            // 1:1, like the Frontier's: `extend_archipelago` authors the
+            // numbers it wants fielded and reads them against the crown
+            // ladder itself. The old row multiplied damage by 19/10 and 21/10
+            // on top of a tier, which is how a one-line tier change could
+            // silently put every mob on all twenty islands at Lv100 while
+            // out-hitting the last crown threefold.
+            (Band::Archipelago, true) => (1, 1, 1, 1, 1, 1),
+            (Band::Archipelago, false) => (1, 1, 1, 1, 1, 1),
             // Same row as Kaelmyr: a parallel track is meant to hit like the
             // land it's an alternative to, not a harder or easier clone of it.
             (Band::Thornveil, true) => (5, 6, 4, 5, 4, 3),
@@ -10284,25 +10307,36 @@ fn broceliande_desc(adj: &str, green: &str, feature: &str, creature: &str, idx: 
 }
 
 /// A small drop table for a Broceliande zone: representative gear from the
-/// generated Frontier catalog for a matching tier, so a slain Greenwood
-/// notable/mob yields real loot that resolves through `item`. Broceliande has
-/// no gear catalog of its own; the reward here is the taming (see `taming.rs`).
+/// shared realm ladder at a matching tier, so a slain Greenwood notable/mob
+/// yields real loot that resolves through `item`. Broceliande has no gear
+/// catalog of its own; the reward here is the taming (see `taming.rs`).
+///
+/// Half a Frontier tier per zone (`z / 2`, t=1..10 over the wood's twenty
+/// zones), and that halving is deliberate. It looks stingy against displayed
+/// level: zone 19 reads Lv51 and pays t=10, where the Frontier pays t=20 by
+/// Lv53. It is not. A Greenwood regular is 924hp at its deepest against the
+/// Frontier's 2005hp at t=20, so the wood already charges half the health for
+/// half the tier. Pay it per level instead and it hands out the Frontier's top
+/// table for 46% of the work, on ground with no title gate on it.
+///
+/// Displayed level is a damage reading (see `MobSpawn::level`), so it says
+/// nothing about what a region costs to clear. Health does. Compare health per
+/// tier against the road before re-slanting any land's loot.
 fn broceliande_loot(z: usize) -> &'static [u32] {
-    // Map the twenty zones onto a modest slice of the Frontier tiers so the wood
-    // gives useful mid gear that rises with depth, without a bespoke catalog.
     let tier = (z / 2).min(super::items::FRONTIER_TIERS - 1);
     super::items::frontier_loot(tier)
 }
 
-/// A Greenwood notable's loot: the borrowed Frontier tier plus Broceliande's
-/// own two uniquely named Wildbound finds for that zone.
+/// A Greenwood notable's loot: the zone's own realm tier plus Broceliande's
+/// own two uniquely named Wildbound finds for that zone. The tier comes from
+/// `broceliande_loot` rather than a second copy of its formula, which is how
+/// the two drifted apart last time.
 fn broceliande_notable_loot(z: usize) -> &'static [u32] {
     static TABLES: OnceLock<Vec<Vec<u32>>> = OnceLock::new();
     let tables = TABLES.get_or_init(|| {
         (0..BROCELIANDE_ZONES)
             .map(|zone| {
-                let tier = (zone / 2).min(super::items::FRONTIER_TIERS - 1);
-                let mut v = super::items::frontier_loot(tier).to_vec();
+                let mut v = broceliande_loot(zone).to_vec();
                 v.extend(super::items::broceliande_find_ids(zone));
                 v
             })
@@ -10870,29 +10904,30 @@ const THORNVEIL_PLACES: [&str; 10] = [
     "Hollow Path",
 ];
 
-/// A regular Thornveil mob's loot: the Reaches' own upper tiers, one distinct
-/// tier per zone (`8 + z`, so zones 0..11 map to Reaches 8..19 and the deepest
-/// zone lands on the Reaches' own top table). The falls have no bespoke
-/// catalog: their gear identity is the two signature finds per zone
-/// (`thornveil_notable_loot`), the same fallback-plus-finds shape Broceliande
-/// uses.
+/// A regular Thornveil mob's loot: one realm tier per zone, t=29..40, the
+/// Reaches' own upper half. The falls have no bespoke catalog: their gear
+/// identity is the two signature finds per zone (`thornveil_notable_loot`),
+/// the same fallback-plus-finds shape Broceliande uses.
 ///
-/// This is Reaches-tier gear (`power_offset = FRONTIER_TIERS`, so t=29..40),
-/// below Kaelmyr's shallowest drop at t=41 - consistent with where Thornveil's
-/// mobs actually land, but below where a "second endgame road" would need to
-/// be. See the measured ladder in CONTEXT.md §9.
+/// Reaches gear on ground that reads Lv58-69 looks under-paid next to
+/// Kaelmyr's Lv63 zone paying t=41, and it is not: a Thornveil regular runs
+/// 2760hp to 3288hp, which is what the road charges at exactly t=29 and t=40.
+/// The falls are priced on the health they cost, to the tier. What makes them
+/// read late is their damage, and damage is what sets displayed level; it buys
+/// no gear. The two finds per zone ride t=41..52 on top of this, and that
+/// lottery is the whole reward for coming, the same way Aelunor's Legendary
+/// roll is (see `aelunor_loot`).
 fn thornveil_loot(z: usize) -> &'static [u32] {
     // One tier per zone, never clamped: `(10 + z).min(19)` collapsed zones 9,
     // 10 and 11 onto one table, so the last quarter of the continent paid no
     // gear progression at all.
-    super::items::reaches_loot(8 + z)
+    super::items::realm_loot(29 + z as i32)
 }
 
-/// A Thornveil notable's loot: the fallback Reaches tier plus the zone's own
-/// two uniquely named finds. The finds do ride Kaelmyr's own item curve
-/// (t=41..52 through the shared `items::realm_slot_stats`), so they are the
-/// only part of Thornveil that pays Kaelmyr-grade gear; the base table below
-/// them does not. See `items::build_thornveil_finds`.
+/// A Thornveil notable's loot: the zone's base Reaches tier (t=29..40) plus
+/// its own two uniquely named finds, which ride t=41..52 through the shared
+/// `items::realm_slot_stats`. The finds are the only Kaelmyr-grade gear the
+/// falls pay, and they are meant to be: see `thornveil_loot`.
 fn thornveil_notable_loot(z: usize) -> &'static [u32] {
     static TABLES: OnceLock<Vec<Vec<u32>>> = OnceLock::new();
     let tables = TABLES.get_or_init(|| {
@@ -12024,8 +12059,10 @@ struct WildboundBiome {
     tiers: [(i32, i32); 5],
     /// Pre-balance-scale (max_hp, damage) for the biome's apex boss.
     boss_stats: (i32, i32),
-    /// Base offset into the Frontier loot catalog's twenty tiers (see
-    /// `wildbound_loot`); each biome climbs five tiers from here.
+    /// The biome's first tier on the shared realm ladder (1-based, see
+    /// `items::realm_loot` and `wildbound_loot`); each biome climbs five
+    /// tiers from here, and its apex boss takes the sixth. Chosen against the
+    /// health the biome actually charges, not against its displayed level.
     loot_base: usize,
     town_square_name: &'static str,
     town_square_desc: &'static str,
@@ -12090,7 +12127,7 @@ const WILDBOUND_BIOMES: [WildboundBiome; 3] = [
         weak: Some(DamageType::Fire),
         tiers: [(120, 10), (220, 16), (340, 22), (480, 28), (640, 34)],
         boss_stats: (1000, 45),
-        loot_base: 0,
+        loot_base: 1,
         town_square_name: "Last Watch - the Muster Square",
         town_square_desc: "Last Watch is less a town than a standing dare: a ring of timber palisade thrown up at the edge of civilised ground, where the King's law gives out and the Wildbound Waste begins. A muster bell hangs ready in a scorched frame at the square's heart, and the packed dirt underfoot is scuffed by boots that came back fewer than went out. Sellswords and the desperate share the fires here, sizing each other up as readily as any foe beyond the wall. A rough shelter stands west, a scavenger's outfitter east, and the log-gate south opens straight onto Duskmire Wood.",
         town_shelter_name: "Last Watch - the Ember Shelter",
@@ -12152,7 +12189,7 @@ const WILDBOUND_BIOMES: [WildboundBiome; 3] = [
         weak: Some(DamageType::Holy),
         tiers: [(420, 26), (620, 34), (860, 42), (1140, 50), (1460, 58)],
         boss_stats: (2200, 68),
-        loot_base: 7,
+        loot_base: 10,
         town_square_name: "Barrowgate - the Sunken Square",
         town_square_desc: "Barrowgate is built into the mouth of the Hollowdeep itself, its houses sunk half into the hillside as though the crypt-country had already begun to claim them. The square is a bowl of packed grave-dirt around an old well nobody drinks from anymore, ringed by lean stone houses whose owners deal only with those who go below and, sometimes, come back. A shelter stands west, an outfitter east, and the crypt-gate south breathes cold air up from the Hollowdeep.",
         town_shelter_name: "Barrowgate - the Vigil House",
@@ -12215,7 +12252,7 @@ const WILDBOUND_BIOMES: [WildboundBiome; 3] = [
         weak: Some(DamageType::Frost),
         tiers: [(1200, 58), (1650, 68), (2150, 78), (2700, 88), (3300, 98)],
         boss_stats: (4200, 120),
-        loot_base: 13,
+        loot_base: 25,
         town_square_name: "Ashhold - the Scorched Square",
         town_square_desc: "Ashhold is a huddle of blackened stone at the true edge of the map, where the Wildbound Waste finally burns itself out into the Scorched Flats. Nothing grows here; the square is bare fused ground, and the folk who hold it - a harder breed than even Last Watch or Barrowgate turns out - trust nobody who hasn't already bled for the privilege. A shelter stands west, an outfitter east, and the ash-gate south is the last safe threshold before the Flats proper.",
         town_shelter_name: "Ashhold - the Cinder Hall",
@@ -12227,14 +12264,22 @@ const WILDBOUND_BIOMES: [WildboundBiome; 3] = [
     },
 ];
 
-/// The drop table for a Wildbound Waste tier: borrows the Frontier catalog
-/// (which already spans early-endgame through the game's toughest numbers)
+/// The drop table for a Wildbound Waste tier: borrows the shared realm ladder
 /// rather than authoring a bespoke item set, same shortcut `broceliande_loot`
-/// takes.
+/// takes. It draws through `realm_loot`, not `frontier_loot`, because the
+/// Scorched Flats outgrew the Frontier catalog: a regular there is 3960hp,
+/// which is what the road charges around t=52, and it was paying t=18 because
+/// the Frontier's twenty tiers were the only ones this function could reach.
+/// The clamp that held it there was invisible from the call site.
+///
+/// The Flats are paid at t=25..29 rather than the t=52 their health alone
+/// would earn. They are a sponge with a soft bite (117 damage against
+/// Kaelmyr's 213), and a sponge is a longer fight, not a deadlier one, so
+/// health buys the tier its *level* supports: the road pays t=29 at Lv57 too.
 ///
 /// Every table here is keyed to the biome's own `loot_base`, the apex boss
 /// included: one affix ladder past its deepest regular, and never the
-/// catalog's top tier (hence the `- 2` clamp, which holds however `loot_base`
+/// catalog's top tier (hence the clamp, which holds however `loot_base`
 /// is retuned later). The boss branch used to hand all three apexes
 /// `FRONTIER_TIERS - 1`, which paid the ~1500hp Duskmire boss - walked to off
 /// the Sahra Wastes, at gentle overworld multipliers, with no title anywhere
@@ -12248,7 +12293,10 @@ fn wildbound_loot(loot_base: usize, tier: usize, boss: bool) -> &'static [u32] {
     } else {
         loot_base + tier
     };
-    super::items::frontier_loot(tier.min(super::items::FRONTIER_TIERS - 2))
+    // Never the shared ladder's top tier, whatever a biome's `loot_base` is
+    // retuned to: the deepest full set in the game stays Kaelmyr's own.
+    let ceiling = super::items::MARKET_TIER_MAX - 1;
+    super::items::realm_loot((tier as i32).min(ceiling))
 }
 
 /// Build the Wildbound Waste: three chained biomes (rooms 30000+), each a

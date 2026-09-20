@@ -1943,6 +1943,27 @@ pub fn kaelmyr_loot(tier: usize) -> &'static [u32] {
     tables[tier.min(KAELMYR_TIERS - 1)].as_slice()
 }
 
+/// The drop table for a 1-based realm tier (1..=[`MARKET_TIER_MAX`]), walking
+/// the three realm ladders in the order their power curves continue each
+/// other, exactly as [`market_item_id`] does: Frontier 1-20, Reaches 21-40,
+/// Kaelmyr 41-60. Out-of-range tiers clamp to the ends.
+///
+/// A land whose own level band runs past one realm's ladder asks for a tier
+/// here instead of picking a single catalog and clamping inside it. Clamping
+/// is what left four of the side lands paying the Frontier's table across
+/// their whole depth: the clamp is invisible at the call site, so ground that
+/// had outgrown the Frontier kept quietly drawing from it.
+pub fn realm_loot(tier: i32) -> &'static [u32] {
+    let t = tier.clamp(1, MARKET_TIER_MAX);
+    let frontier = FRONTIER_TIERS as i32;
+    let reaches = frontier + REACHES_TIERS as i32;
+    match t {
+        t if t <= frontier => frontier_loot((t - 1) as usize),
+        t if t <= reaches => reaches_loot((t - frontier - 1) as usize),
+        t => kaelmyr_loot((t - reaches - 1) as usize),
+    }
+}
+
 /// The drop table for an Archipelago island (tier 0..ARCHIPELAGO_TIERS), same
 /// shape as `kaelmyr_loot` but drawn from the Archipelago's own catalog instead
 /// of re-dropping the Reaches' table.
