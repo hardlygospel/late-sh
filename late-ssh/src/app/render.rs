@@ -256,6 +256,12 @@ struct DrawContext<'a> {
     clubhouse_bot_id: Option<uuid::Uuid>,
     /// The clubhouse composer footer; built only on that screen.
     clubhouse_composer: Option<chat::ui::ComposerBlockView<'a>>,
+    /// The night city page: the runner's spot and its look.
+    city_state: &'a crate::app::deadchannel::city::state::State,
+    city_look: Option<&'a crate::app::deadchannel::runner::state::Look>,
+    /// A chat overlay that lands on the Lounge (a `/summary` or reaction list
+    /// requested on Home); the Lounge composer itself opens none.
+    clubhouse_overlay: Option<&'a crate::app::common::overlay::Overlay>,
     artboard_interacting: bool,
     leaderboard: &'a Arc<LeaderboardData>,
     now_playing: Option<&'a NowPlaying>,
@@ -1083,7 +1089,7 @@ impl App {
         let zen_care = crate::app::zen::ui::Care {
             bonsai: crate::app::zen::ui::Chore::of(
                 true,
-                self.bonsai_state.last_watered == Some(care_day),
+                self.bonsai.tree.last_watered == Some(care_day),
             ),
             tank: crate::app::zen::ui::Chore::of(
                 self.shop_state.entitlements().has_aquarium(),
@@ -1300,13 +1306,16 @@ impl App {
                         clubhouse_graybeard_id: self.clubhouse_graybeard_id,
                         clubhouse_bot_id: self.clubhouse_bot_id,
                         clubhouse_composer,
+                        city_state: &self.city,
+                        city_look: self.runner_looks.get(&self.user_id),
+                        clubhouse_overlay: self.chat.overlay(),
                         artboard_interacting: self.artboard_interacting,
                         leaderboard: &self.leaderboard,
                         now_playing: now_playing.as_ref(),
                         paired_client: paired_client.as_ref(),
                         eq_state,
                         sidebar_clock: &sidebar_clock,
-                        bonsai: &self.bonsai_state,
+                        bonsai: &self.bonsai.tree,
                         banner: banner.as_ref(),
                         is_admin: self.is_admin,
                         is_moderator: self.is_moderator,
@@ -1864,6 +1873,16 @@ impl App {
                     graybeard_user_id: ctx.clubhouse_graybeard_id,
                     bot_user_id: ctx.clubhouse_bot_id,
                     composer: ctx.clubhouse_composer.take(),
+                    overlay: ctx.clubhouse_overlay,
+                },
+            ),
+            Screen::City => crate::app::deadchannel::city::ui::draw(
+                frame,
+                content_area,
+                crate::app::deadchannel::city::ui::CityView {
+                    state: ctx.city_state,
+                    own_username: ctx.clubhouse_own_username,
+                    look: ctx.city_look,
                 },
             ),
             Screen::Zen => {
@@ -2155,6 +2174,7 @@ impl App {
                 ctx.room_search_modal_state,
                 ctx.chat_state,
                 ctx.user_id,
+                room_search_modal::state::PickerScope::for_screen(screen),
             );
         }
 
@@ -2285,7 +2305,8 @@ fn app_frame_title(screen: Screen, ctx: &DrawContext<'_>) -> Line<'static> {
                         | Screen::GreenDragon
                 ))
             || (*tab_screen == Screen::Dashboard
-                && matches!(screen, Screen::DailyMatch | Screen::HouseTable));
+                && matches!(screen, Screen::DailyMatch | Screen::HouseTable))
+            || (*tab_screen == Screen::Clubhouse && screen == Screen::City);
         let style = if active {
             Style::default()
                 .fg(theme::BG_SELECTION())
@@ -2316,6 +2337,7 @@ fn app_frame_title(screen: Screen, ctx: &DrawContext<'_>) -> Line<'static> {
         Screen::Profiles => "Profiles",
         Screen::Leaderboard => "Leaderboards",
         Screen::Clubhouse => "Clubhouse",
+        Screen::City => "Undercity",
         Screen::DailyMatch => "Daily Match",
         Screen::HouseTable => "House Table",
         Screen::Scratchpad => "Scratchpad",

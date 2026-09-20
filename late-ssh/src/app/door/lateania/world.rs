@@ -84,7 +84,7 @@ impl Dir {
     }
 
     /// A single compass-arrow glyph for this direction, distinct from the
-    /// `▴`/`▾` stair markers (those mean "a staircase is here"; this means
+    /// `⇑`/`⇓`/`⇕` stair markers (those mean "a staircase is here"; this means
     /// "go this way") so the two never read as the same thing on screen.
     pub fn compass_glyph(self) -> char {
         match self {
@@ -6021,12 +6021,22 @@ fn extend_archipelago(
         ISLANDS.iter().enumerate()
     {
         let ibase = island_entrance(isle);
-        // The isles are the true endgame, strictly past Kaelmyr's own 32..51
-        // tier band (see extend_kaelmyr) - not below or overlapping it, so
-        // even the shallowest island out-scales Kaelmyr's deepest zone.
-        let tier = (isle + 52) as i32;
-        // The last three islands are the apex bosses of the whole game: a
-        // real step up even over the rest of the Archipelago.
+        let isle_n = isle as i32;
+        // The isles are the true endgame: a ramp that starts one notch past
+        // Kaelmyr's deepest zone and climbs to the level cap, so the twenty
+        // islands are a ladder rather than one flat wall. There is no `tier`
+        // here on purpose. A tier is a generator input that the band row then
+        // rescales, and the Archipelago's row is 1:1 (see
+        // `tune_spawn_balance`), so these numbers are what is actually
+        // fielded and can be read against the crown ladder directly:
+        //
+        //   island  0: trash Lv80-87, boss Lv82, boss bite 348
+        //   island 19: trash Lv93-100, boss Lv100, boss bite 443
+        //
+        // Kaethyr Ascendant, the last crown, is Lv80 at 397. The shallow
+        // islands therefore hit softer than he does and the deep ones harder:
+        // the Archipelago is off-road content that runs past the end of the
+        // road, not a rung on it. See CONTEXT.md §9 for the full ladder.
         let apex = isle + 3 >= super::archipelago::ISLAND_COUNT;
         let mut rng = MazeRng::new(ARCH_SEED ^ (isle as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
 
@@ -7564,7 +7574,11 @@ fn tune_spawn_balance(spawns: &mut [MobSpawn]) {
         if !spawn.boss {
             let endgame = matches!(
                 band,
-                Band::Frontier | Band::Reaches | Band::Kaelmyr | Band::Archipelago | Band::Thornveil
+                Band::Frontier
+                    | Band::Reaches
+                    | Band::Kaelmyr
+                    | Band::Archipelago
+                    | Band::Thornveil
             );
             spawn.respawn_secs = if endgame {
                 scale_u64(spawn.respawn_secs, 3, 4).max(60)
@@ -10565,19 +10579,24 @@ fn extend_broceliande(
     }
 }
 
-// ---- Aelunor, the Faewood: a sprawling elven/fae forest (rooms 25000+) ----
 // ---- Thornveil Falls (rooms 34000+) ---------------------------------------
 //
 //   Thornveil Falls is a hidden second wood past the known Greenwood: a
 //   ~1150-room continent of mist-wrapped canopy, root-choked hollows, and a
 //   descending chain of waterfalls each louder and older than the last. Where
 //   Broceliande is a moderate country you can walk into and out of freely,
-//   Thornveil is a genuine endgame reach, tier-for-tier a real alternative to
-//   Kaelmyr rather than a harder gate sitting past it - the two tracks share
-//   the same power band (see `extend_thornveil`'s tier formula against
-//   `extend_kaelmyr`'s) so a player who has cleared the Reaches can choose
-//   either one, or split time between both, instead of Kaelmyr being the only
-//   road forward.
+//   Thornveil is late-game ground intended as an alternative to Kaelmyr rather
+//   than a harder gate sitting past it.
+//
+//   **It does not reach that intent yet.** Measured through
+//   `tune_spawn_balance` and `MobSpawn::level`, Thornveil's twelve zones read
+//   L58-69 trash and L64-68 boss, against Kaelmyr's L63-78 and L69-80: every
+//   Thornveil notable reads below Kaelmyr's shallowest, so it lands as a
+//   Reaches-tier side country, not a second road through the same stretch.
+//   Raising it is an open balance decision, not a settled one - see the
+//   measured ladder in CONTEXT.md §9. `tier` is not comparable across bands:
+//   the band rows in `tune_spawn_balance` do most of the work, so compare
+//   displayed levels, never the tier literals.
 //
 //   Twelve zones of ~96 rooms each, every one carved as a braided maze
 //   (`carve_maze`) - never a uniform grid. Every zone is a maze rather than a
@@ -10616,6 +10635,28 @@ const fn thornveil_zone_is_cavern(_z: usize) -> bool {
 pub fn is_thornveil_room(id: RoomId) -> bool {
     (THORNVEIL_BASE..THORNVEIL_BASE + THORNVEIL_ZONES as u32 * THORNVEIL_ZONE_STRIDE).contains(&id)
 }
+
+/// One theme per Thornveil zone, feeding the resist/weak pass exactly like
+/// `KAELMYR_ZONE_THEMES` and `BROCELIANDE_ZONE_THEMES`. Wet, green, storm-lit
+/// country, so the lanes lean Lightning/Fire/Arcane, with the beasts of the
+/// eaves, the haunted broken cliff, and the veiled sanctum rounding it out.
+/// The census contract in `the_school_census_stays_inside_its_declared_bands`
+/// caps a twelve-zone land at three zones per weak school and four resist
+/// zones; this sits at three and three.
+const THORNVEIL_ZONE_THEMES: [ZoneTheme; THORNVEIL_ZONES] = [
+    ZoneTheme::Beastwild, // Mistgate Eaves
+    ZoneTheme::Verdant,   // Weeping Boughs
+    ZoneTheme::Tidal,     // Sixfold Cataracts
+    ZoneTheme::Drowned,   // Drownroot Hollow
+    ZoneTheme::Storm,     // Hanging Spray
+    ZoneTheme::Verdant,   // Greywater Steps
+    ZoneTheme::Resonant,  // Undersong
+    ZoneTheme::Haunted,   // Cliffbroken Reach
+    ZoneTheme::Verdant,   // Rootfall Deep
+    ZoneTheme::Storm,     // Stormcanopy Heights
+    ZoneTheme::Tidal,     // Last Cataract
+    ZoneTheme::Fae,       // Veilfall Sanctum
+];
 
 /// Twelve zones of Thornveil Falls: (zone, adjective, ground, landmark,
 /// creatures, three mob names, boss). `thornveil_desc` supplies the paragraph
@@ -10676,7 +10717,7 @@ const THORNVEIL_ZONES_DATA: [(&str, &str, &str, &str, &str, [&str; 3], &str); 12
         "The Drownroot Elder",
     ),
     (
-        "The Hanging Spray",
+        "Hanging Spray",
         "cloud-wrapped",
         "slick hanging stone",
         "a cliffside veil of spray that never quite touches ground",
@@ -10702,7 +10743,7 @@ const THORNVEIL_ZONES_DATA: [(&str, &str, &str, &str, &str, [&str; 3], &str); 12
         "The Warden of the Ninth Step",
     ),
     (
-        "The Undersong",
+        "Undersong",
         "hollow-echoing",
         "damp resonant stone",
         "a cavern hollowed out behind the falls, where the water's roar becomes a song",
@@ -10728,7 +10769,7 @@ const THORNVEIL_ZONES_DATA: [(&str, &str, &str, &str, &str, [&str; 3], &str); 12
         "The Cliffbreaker",
     ),
     (
-        "The Rootfall Deep",
+        "Rootfall Deep",
         "root-choked",
         "black cavern loam",
         "a cavern where the World-Oak's own roots plunge down into the dark",
@@ -10754,7 +10795,7 @@ const THORNVEIL_ZONES_DATA: [(&str, &str, &str, &str, &str, [&str; 3], &str); 12
         "Skyreach, the Canopy Storm",
     ),
     (
-        "The Last Cataract",
+        "Last Cataract",
         "world-shaking",
         "trembling wet stone",
         "the greatest of the falls, louder than thought and older than the wood around it",
@@ -10829,19 +10870,29 @@ const THORNVEIL_PLACES: [&str; 10] = [
     "Hollow Path",
 ];
 
-/// A regular Thornveil mob's loot: the Reaches' own upper tiers (10..19),
-/// mapped so the falls give useful endgame-adjacent gear without a bespoke
-/// full catalog of their own - Thornveil's real gear identity is its two
-/// signature finds per zone (`thornveil_notable_loot`), same pattern as
-/// Broceliande's fallback-plus-finds shape.
+/// A regular Thornveil mob's loot: the Reaches' own upper tiers, one distinct
+/// tier per zone (`8 + z`, so zones 0..11 map to Reaches 8..19 and the deepest
+/// zone lands on the Reaches' own top table). The falls have no bespoke
+/// catalog: their gear identity is the two signature finds per zone
+/// (`thornveil_notable_loot`), the same fallback-plus-finds shape Broceliande
+/// uses.
+///
+/// This is Reaches-tier gear (`power_offset = FRONTIER_TIERS`, so t=29..40),
+/// below Kaelmyr's shallowest drop at t=41 - consistent with where Thornveil's
+/// mobs actually land, but below where a "second endgame road" would need to
+/// be. See the measured ladder in CONTEXT.md §9.
 fn thornveil_loot(z: usize) -> &'static [u32] {
-    let tier = (10 + z).min(super::items::REACHES_TIERS - 1);
-    super::items::reaches_loot(tier)
+    // One tier per zone, never clamped: `(10 + z).min(19)` collapsed zones 9,
+    // 10 and 11 onto one table, so the last quarter of the continent paid no
+    // gear progression at all.
+    super::items::reaches_loot(8 + z)
 }
 
 /// A Thornveil notable's loot: the fallback Reaches tier plus the zone's own
-/// two uniquely named finds (power-curve matched to Kaelmyr, see
-/// `items::build_thornveil_finds`).
+/// two uniquely named finds. The finds do ride Kaelmyr's own item curve
+/// (t=41..52 through the shared `items::realm_slot_stats`), so they are the
+/// only part of Thornveil that pays Kaelmyr-grade gear; the base table below
+/// them does not. See `items::build_thornveil_finds`.
 fn thornveil_notable_loot(z: usize) -> &'static [u32] {
     static TABLES: OnceLock<Vec<Vec<u32>>> = OnceLock::new();
     let tables = TABLES.get_or_init(|| {
@@ -10874,13 +10925,14 @@ fn extend_thornveil(
         THORNVEIL_ZONES_DATA.iter().enumerate()
     {
         let zbase = THORNVEIL_BASE + (z as u32) * THORNVEIL_ZONE_STRIDE;
-        // A parallel endgame band to Kaelmyr's own 32..51 (see
-        // `extend_kaelmyr`): Thornveil's twelve zones (30..41) sit inside
-        // Kaelmyr's lower half, a real alternative rather than a harder gate
-        // past it or a trivial detour below it.
+        // Intended as a band beside Kaelmyr's own 32..51 (see
+        // `extend_kaelmyr`), but a raw tier comparison is misleading: the two
+        // lands ride different rows in `tune_spawn_balance` and Thornveil's
+        // base coefficients are ~10-15% gentler on top of that. Measured, this
+        // lands at L64-68 for notables against Kaelmyr's L69-80, i.e. below
+        // it. Open balance decision; see the block comment above.
         let tier = (z + 30) as i32;
-        let mut rng =
-            MazeRng::new(THORNVEIL_SEED ^ (z as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
+        let mut rng = MazeRng::new(THORNVEIL_SEED ^ (z as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
 
         // Carve as a braided maze (the connectivity pass). Every zone is a
         // maze (see `thornveil_zone_is_cavern`), so `cavern_floor` is always
@@ -11005,7 +11057,13 @@ fn extend_thornveil(
             // roughly 10-15% gentler base coefficients at the same tier - a
             // real alternative to Kaelmyr, not a reskin with identical numbers.
             let (mob_name, behavior, boss_mob, hp, dmg) = if is_boss {
-                (boss, MobBehavior::Brute, true, 2800 + tier * 225, 112 + tier * 5)
+                (
+                    boss,
+                    MobBehavior::Brute,
+                    true,
+                    2800 + tier * 225,
+                    112 + tier * 5,
+                )
             } else if degree == 1 {
                 (
                     mob_names[0],
@@ -11045,9 +11103,21 @@ fn extend_thornveil(
                     100 + tier * 3 + depth,
                 )
             };
-            let profile = match behavior {
-                MobBehavior::Caster(school) => DamageProfile::new(school, None, None),
-                _ => DamageProfile::new(DamageType::Physical, None, None),
+            // Same weak-forward shape as every other themed continent: the
+            // notable wears the zone's weakness but never its resist, so prep
+            // is pure reward on the fight players provision for. Thornveil
+            // shipped with flat `None/None` profiles, which left all twelve
+            // notables with no weakness at all and broke
+            // `every_boss_carries_a_weakness`.
+            let attack = match behavior {
+                MobBehavior::Caster(school) => school,
+                _ => DamageType::Physical,
+            };
+            let theme = THORNVEIL_ZONE_THEMES[z];
+            let profile = if boss_mob {
+                DamageProfile::new(attack, None, theme.weak())
+            } else {
+                DamageProfile::new(attack, theme.resist(), theme.weak())
             };
             spawns.push(MobSpawn {
                 id: spawn_id,
@@ -11119,9 +11189,14 @@ fn thornveil_gate_room(rooms: &HashMap<RoomId, Room>, spawns: &[MobSpawn]) -> Op
                 .max_by_key(|r| r.id)
                 .map(|r| r.id)
         })
-        .or_else(|| rooms.contains_key(&BROCELIANDE_BASE).then_some(BROCELIANDE_BASE))
+        .or_else(|| {
+            rooms
+                .contains_key(&BROCELIANDE_BASE)
+                .then_some(BROCELIANDE_BASE)
+        })
 }
 
+// ---- Aelunor, the Faewood: a sprawling elven/fae forest (rooms 25000+) ----
 //
 // Twelve zones of organic, sprawling clearings - never a maze, never a grid
 // (see `carve_cavern`; every single zone here is cavern-carved, deliberately

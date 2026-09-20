@@ -167,6 +167,13 @@ impl App {
             // still lands within 132ms of its tick.
             changed = true;
         }
+        if self.screen == Screen::City && anim_half {
+            // Rain, neon, steam and the screen's static ride the same
+            // ~7.5fps ambience edge as the clubhouse; the runner's steps
+            // are input-driven.
+            self.city.tick(self.marquee_tick as u64);
+            changed = true;
+        }
 
         // Expire a stale paired-clipboard wait here rather than inside
         // chat.tick(): the registry slot must be cancelled along with it, so
@@ -292,6 +299,7 @@ impl App {
         changed |= self.drain_voice_join_results();
         changed |= self.tick_stream();
         changed |= self.tick_crown();
+        changed |= self.bonsai.tick();
         changed |= self.tick_pot();
         // News state is ticked inside chat.tick()
         let profile_tick = self.profile_state.tick();
@@ -936,7 +944,7 @@ impl App {
             // A Bonsai Decay Shield purchase is picked up here, but the tree
             // has no in-session decay simulation to refresh, so it only
             // matters from the next login's elapsed-day catch-up onward.
-            self.bonsai_state.decay_protection = self.shop_state.active_bonsai_decay_protection();
+            self.bonsai.tree.decay_protection = self.shop_state.active_bonsai_decay_protection();
             // An Aquarium Shield purchase takes effect at once: the fish
             // stop being hungry and the water clears on the next quarter edge.
             self.aquarium_care
@@ -1054,18 +1062,6 @@ impl App {
                     }
                     ActivityKind::GameLost { .. } if user_id == self.user_id => {
                         self.pet_state.note_loss(Instant::now());
-                        None
-                    }
-                    // The session's own watering cleared the DB chip gate:
-                    // this is the one place that may claim the payout, since
-                    // another session or an in-flight save can make the
-                    // in-memory state disagree with the row.
-                    ActivityKind::BonsaiWatered if user_id == self.user_id => {
-                        self.bonsai_state.message = Some(format!(
-                            "Watered (+{} chips)",
-                            crate::app::bonsai::svc::WATER_CHIP_BONUS
-                        ));
-                        changed = true;
                         None
                     }
                     // Same story for the tank: the DB gate said this
@@ -1279,7 +1275,11 @@ impl App {
             || self.last_input_at.elapsed() < POST_INPUT_HOT_WINDOW
             || self.ultimate_state.has_active_effect()
             || self.screen == Screen::HouseTable
-            || (self.screen == Screen::Arcade && self.is_playing_game);
+            || (self.screen == Screen::Arcade && self.is_playing_game)
+            // A pool shot is the daily board's only animation: while one is
+            // rolling it wants the same 15fps as a live table, and the moment
+            // it settles the board goes back to being event-driven.
+            || (self.screen == Screen::DailyMatch && self.daily.pool_is_animating());
         if hot {
             return HOT_TICK;
         }
@@ -1291,6 +1291,7 @@ impl App {
         // Zen music or visualizer tile paints its eq on that edge too; left
         // to the aquarium's quarter tier it drops to ~3.8fps.
         if self.screen == Screen::Clubhouse
+            || self.screen == Screen::City
             || self.right_sidebar_visible()
             || (self.screen == Screen::Zen && self.zen.shows_equalizer())
             || self.last_pet_frame.get().is_some()

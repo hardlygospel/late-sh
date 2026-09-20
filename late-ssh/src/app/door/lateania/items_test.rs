@@ -483,40 +483,23 @@ fn sunderlakes_and_broceliande_finds_stay_under_the_frontier_ceiling() {
 }
 
 #[test]
-fn thornveil_finds_match_kaelmyrs_own_power_curve() {
-    // Thornveil Falls is a parallel endgame track to Kaelmyr, not a gentler
-    // detour: its finds should land squarely inside Kaelmyr's own power
-    // range for the matching slot, not under the Sunderlakes/Broceliande
-    // ceiling those two gentler continents are held to.
-    let kaelmyr_floor = |slot: Slot| -> i32 {
-        kaelmyr_loot(0)
-            .iter()
-            .filter_map(|id| item(*id))
-            .filter(|it| it.slot() == Some(slot))
-            .map(Item::power)
-            .min()
-            .unwrap_or(0)
-    };
-    let kaelmyr_ceiling = |slot: Slot| -> i32 {
-        kaelmyr_loot(KAELMYR_TIERS - 1)
-            .iter()
-            .filter_map(|id| item(*id))
-            .filter(|it| it.slot() == Some(slot))
-            .map(Item::power)
-            .max()
-            .unwrap_or(0)
-    };
-    for zone in 0..12 {
+fn thornveil_finds_ride_the_shared_realm_slot_curve() {
+    // Thornveil's finds are built from the same universal per-slot table every
+    // generated realm catalog uses, at t=41..52 (Kaelmyr's own item-power floor
+    // upward). Assert the exact stats rather than a range: a hand-mirrored copy
+    // of that table has already drifted here once, and a range wide enough to
+    // be safe is wide enough to miss the drift.
+    for zone in 0..THORNVEIL_ZONE_WORDS.len() {
+        let t = 41 + zone as i32;
         for id in thornveil_find_ids(zone) {
             let it = item(id).expect("thornveil find resolves");
-            let Some(slot) = it.slot() else { continue };
-            assert!(
-                it.power() >= kaelmyr_floor(slot) && it.power() <= kaelmyr_ceiling(slot) * 2,
-                "{} (power {}) should read as Kaelmyr-comparable gear, not far outside its range ({}..{})",
-                it.name,
-                it.power(),
-                kaelmyr_floor(slot),
-                kaelmyr_ceiling(slot) * 2
+            let slot = it.slot().expect("a thornveil find is equipment");
+            let (attack, max_hp, armor) = realm_slot_stats(slot, t);
+            assert_eq!(
+                (it.mods.attack, it.mods.max_hp, it.mods.armor),
+                (attack, max_hp, armor),
+                "{} ({slot:?} at t={t}) should ride the shared realm slot curve",
+                it.name
             );
         }
     }

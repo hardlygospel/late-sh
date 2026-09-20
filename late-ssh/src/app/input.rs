@@ -997,7 +997,8 @@ fn handle_parsed_input_inner(app: &mut App, event: ParsedInput) {
                     return;
                 }
                 let from_dashboard = ctx.screen == Screen::Dashboard;
-                if let Some(b) = app.chat.submit_composer(true, from_dashboard) {
+                let commands = chat::state::ComposerCommands::for_screen(ctx.screen);
+                if let Some(b) = app.chat.submit_composer(true, commands) {
                     app.banner = Some(b);
                 }
                 chat::input::handle_post_submit_requests(app, from_dashboard);
@@ -1604,6 +1605,10 @@ fn handle_dedicated_screen_input(app: &mut App, ctx: InputContext, event: &Parse
 
     if ctx.screen == Screen::Clubhouse {
         return crate::app::clubhouse::input::handle_event(app, event);
+    }
+
+    if ctx.screen == Screen::City {
+        return crate::app::deadchannel::city::input::handle_event(app, event);
     }
 
     if ctx.screen == Screen::Zen {
@@ -2358,6 +2363,12 @@ fn dispatch_escape(app: &mut App) {
         crate::app::door::darkroom::screen::GAME.handle_key(app, 0x1B);
         return;
     }
+    // Esc in the city closes an open shop panel or steps back from the
+    // ledge; on the street it means nothing (the wire is the way out).
+    if ctx.screen == Screen::City && (app.city.panel().is_some() || app.city.at_ledge()) {
+        app.city.dismiss();
+        return;
+    }
     // Esc from the Games hub closes the rc config modal, cancels a pending
     // reset prompt, and otherwise drops back to Home.
     if ctx.screen == Screen::Games {
@@ -3091,6 +3102,8 @@ fn handle_notifications_hud_click(app: &mut App, mouse: MouseEvent) -> bool {
     }
 
     app.pending_chat_profile_open = None;
+    app.chat.reset_composer();
+    app.chat.clear_message_selection();
     app.set_screen(Screen::Dashboard);
     app.chat.select_notifications();
     true
@@ -3155,6 +3168,8 @@ fn handle_arrow_for_screen(app: &mut App, screen: Screen, key: u8) -> bool {
         // Walk-mode arrows are consumed in handle_dedicated_screen_input;
         // composing-mode arrows are swallowed by the shared composer gate.
         Screen::Clubhouse => false,
+        // City arrows walk the runner in handle_dedicated_screen_input.
+        Screen::City => false,
         // Daily board arrows are consumed in handle_dedicated_screen_input.
         Screen::DailyMatch => false,
         // House table arrows are consumed in handle_dedicated_screen_input.
@@ -3740,7 +3755,7 @@ fn handle_global_key(app: &mut App, ctx: InputContext, byte: u8) -> bool {
     // While the reaction leader is armed, every digit belongs to it: `1`-`9`
     // are the quick reactions and `0` opens the custom icon picker. Let them
     // fall through to the chat message-action handler instead of the global
-    // page switch (`0` now lands on the Clubhouse, `1`-`7` on other pages).
+    // page switch (`0` now lands on the Clubhouse, `1`-`6` on other pages).
     if matches!(
         byte,
         b'0' | b'1' | b'2' | b'3' | b'4' | b'5' | b'6' | b'7' | b'8' | b'9'
@@ -3944,9 +3959,21 @@ fn handle_global_key(app: &mut App, ctx: InputContext, byte: u8) -> bool {
             app.set_screen(Screen::Leaderboard);
             true
         }
+        // `0` is the clubhouse. Pressed again on the clubhouse it goes
+        // down to the undercity (deadchannel's street), runners only;
+        // from the undercity it comes back up. A descent always lands on
+        // the street: a panel or the ledge left open on the way up does
+        // not carry over.
         b'0' if !artboard_blocks_page_switch => {
             reset_composers_for_page_change(app);
-            app.set_screen(Screen::Clubhouse);
+            let target = match ctx.screen {
+                Screen::Clubhouse if app.is_runner() => {
+                    app.city.dismiss();
+                    Screen::City
+                }
+                _ => Screen::Clubhouse,
+            };
+            app.set_screen(target);
             true
         }
         b'\t' if artboard_rail_takes_tab(app, ctx.screen) => {
@@ -4081,6 +4108,9 @@ fn dispatch_screen_key(app: &mut App, screen: Screen, byte: u8) {
         Screen::Clubhouse => {
             // Clubhouse keys are handled in handle_dedicated_screen_input
             // (walking, chat routing, interactions); no-op here.
+        }
+        Screen::City => {
+            // City keys are handled in handle_dedicated_screen_input.
         }
         Screen::DailyMatch => {
             // Daily board keys are handled in handle_dedicated_screen_input.

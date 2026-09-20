@@ -8,12 +8,14 @@ use crate::app::arcade::share::ShareCardKind;
 use crate::app::arcade::sliding_puzzle::image::{
     SlidingPuzzleImageOutcome, SlidingPuzzleImageStage,
 };
+use crate::app::bonsai::state::BonsaiAction;
+use crate::app::bonsai::svc::BonsaiActionResult;
 use crate::app::chat::news::svc::XMediaLookup;
 use crate::app::chat::svc::GildRefusal;
 use crate::app::crown::svc::CrownRefusal;
 use crate::app::deadchannel::haunt::state::GateVerdict;
 use crate::app::games::chips::svc::RoundRefusal;
-use crate::app::lobby::daily::svc::DailyWinPayout;
+use crate::app::lobby::daily::svc::{DailyWinPayout, PoolShotOutcome};
 use crate::app::pot::svc::PotRefusal;
 
 /// Why the render loop drew a frame. The loop can only distinguish its two
@@ -196,10 +198,12 @@ mod inner {
         ActivityGame, BioScreenOutcome, CrownRefusal, DailyWinPayout, DoorGame, FirstContactBeat,
         GalleryApplauseResult, GalleryHangResult, GalleryTakeDownResult, GateVerdict, GildRefusal,
         GildTier, NewsShareReward, OnlineTimeFlushResult, PaperOpenResult, PaperPrintResult,
-        PotRefusal, RenderReason, RoundRefusal, SongQueueReward, SshRejectReason, SummaryResult,
-        TranslationResult, VizWireBands,
+        PoolShotOutcome, PotRefusal, RenderReason, RoundRefusal, SongQueueReward, SshRejectReason,
+        SummaryResult, TranslationResult, VizWireBands,
     };
+    use super::{BonsaiAction, BonsaiActionResult};
     use super::{SlidingPuzzleImageOutcome, SlidingPuzzleImageStage};
+    use crate::app::bonsai::state::BranchAction;
 
     fn meter() -> opentelemetry::metrics::Meter {
         global::meter("late-ssh")
@@ -422,6 +426,34 @@ mod inner {
         }
     }
 
+    fn bonsai_action_label(action: BonsaiAction) -> &'static str {
+        match action {
+            BonsaiAction::Water => "water",
+            BonsaiAction::Branch(BranchAction::Bend { .. }) => "bend",
+            BonsaiAction::Branch(BranchAction::Prune) => "prune",
+            BonsaiAction::Branch(BranchAction::Split) => "split",
+            BonsaiAction::Branch(BranchAction::Pinch) => "pinch",
+        }
+    }
+
+    fn bonsai_action_result_label(result: BonsaiActionResult) -> &'static str {
+        match result {
+            BonsaiActionResult::Stored => "stored",
+            BonsaiActionResult::Refused => "refused",
+            BonsaiActionResult::Failed => "failed",
+        }
+    }
+
+    fn bonsai_actions_total() -> &'static Counter<u64> {
+        static METRIC: OnceLock<Counter<u64>> = OnceLock::new();
+        METRIC.get_or_init(|| {
+            meter()
+                .u64_counter("late_ssh_bonsai_actions_total")
+                .with_description("Bonsai care actions, by action and how they settled")
+                .build()
+        })
+    }
+
     fn crown_takes_total() -> &'static Counter<u64> {
         static METRIC: OnceLock<Counter<u64>> = OnceLock::new();
         METRIC.get_or_init(|| {
@@ -607,6 +639,18 @@ mod inner {
                 .u64_counter("late_ssh_daily_win_payouts_total")
                 .with_description(
                     "Daily correspondence match wins by what the chips did (paid, or refused by a lobby gate)",
+                )
+                .build()
+        })
+    }
+
+    fn pool_shots_total() -> &'static Counter<u64> {
+        static METRIC: OnceLock<Counter<u64>> = OnceLock::new();
+        METRIC.get_or_init(|| {
+            meter()
+                .u64_counter("late_ssh_pool_shots_total")
+                .with_description(
+                    "Daily pool shots by how they ended. `truncated` is a physics bug reaching production: the simulator gave up at its guard rails and the half-played rack was still written as the match",
                 )
                 .build()
         })
@@ -958,6 +1002,25 @@ mod inner {
         );
     }
 
+    fn pool_shot_outcome_label(outcome: PoolShotOutcome) -> &'static str {
+        match outcome {
+            PoolShotOutcome::Settled => "settled",
+            PoolShotOutcome::Truncated => "truncated",
+            PoolShotOutcome::Rejected => "rejected",
+        }
+    }
+
+    /// One daily pool shot reached the end of the only path it has. `settled`
+    /// is the denominator the other two are read against: a little `rejected`
+    /// is players and clients disagreeing, a rising `rejected` is a desync,
+    /// and any `truncated` at all is the physics.
+    pub fn record_pool_shot(outcome: PoolShotOutcome) {
+        pool_shots_total().add(
+            1,
+            &[KeyValue::new("outcome", pool_shot_outcome_label(outcome))],
+        );
+    }
+
     /// A share pays a flat reward, so one counter tracks the shares and
     /// another the chips they minted; the two together are the sink-free
     /// half of the News economy.
@@ -1018,6 +1081,16 @@ mod inner {
 
     pub fn record_gild_refused(refusal: GildRefusal) {
         chat_gilds_refused_total().add(1, &[KeyValue::new("reason", gild_refusal_label(refusal))]);
+    }
+
+    pub fn record_bonsai_action(action: BonsaiAction, result: BonsaiActionResult) {
+        bonsai_actions_total().add(
+            1,
+            &[
+                KeyValue::new("action", bonsai_action_label(action)),
+                KeyValue::new("result", bonsai_action_result_label(result)),
+            ],
+        );
     }
 
     /// The price is burned whole, so one counter tracks the takeovers and
@@ -1336,9 +1409,10 @@ mod inner {
         ActivityGame, BioScreenOutcome, CrownRefusal, DailyWinPayout, DoorGame, FirstContactBeat,
         GalleryApplauseResult, GalleryHangResult, GalleryTakeDownResult, GateVerdict, GildRefusal,
         GildTier, NewsShareReward, OnlineTimeFlushResult, PaperOpenResult, PaperPrintResult,
-        PotRefusal, RenderReason, RoundRefusal, SongQueueReward, SshRejectReason, SummaryResult,
-        TranslationResult, VizWireBands,
+        PoolShotOutcome, PotRefusal, RenderReason, RoundRefusal, SongQueueReward, SshRejectReason,
+        SummaryResult, TranslationResult, VizWireBands,
     };
+    use super::{BonsaiAction, BonsaiActionResult};
     use super::{SlidingPuzzleImageOutcome, SlidingPuzzleImageStage};
 
     pub fn record_ssh_connection() {}
@@ -1367,11 +1441,13 @@ mod inner {
     ) {
     }
     pub fn record_daily_win_payout(_payout: DailyWinPayout) {}
+    pub fn record_pool_shot(_outcome: PoolShotOutcome) {}
     pub fn record_news_shared(_reward: NewsShareReward) {}
     pub fn record_news_x_media_lookup(_lookup: XMediaLookup) {}
     pub fn record_song_queued(_reward: SongQueueReward) {}
     pub fn record_gild_bought(_tier: GildTier) {}
     pub fn record_gild_refused(_refusal: GildRefusal) {}
+    pub fn record_bonsai_action(_action: BonsaiAction, _result: BonsaiActionResult) {}
     pub fn record_crown_taken(_price: i64) {}
     pub fn record_crown_take_refused(_refusal: CrownRefusal) {}
     pub fn record_round_bought(_patrons: i64, _chips: i64) {}

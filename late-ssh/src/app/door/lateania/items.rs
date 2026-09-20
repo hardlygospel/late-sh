@@ -2433,20 +2433,13 @@ const THORNVEIL_ZONE_WORDS: [&str; 12] = [
 ];
 
 fn build_thornveil_finds() -> Vec<Item> {
-    // Thornveil Falls is a parallel endgame track to Kaelmyr, not a strictly
-    // weaker detour, so its finds reuse the exact same universal per-slot
-    // formula `build_generated_items` uses for every full 200-item catalog
-    // (see the shared match arms there) rather than a bespoke, gentler curve -
-    // at the same t, a Thornveil find is exactly as strong as a Kaelmyr drop.
-    fn stats(slot: Slot, t: i32) -> (i32, i32, i32) {
-        match slot {
-            Slot::Weapon => (30 + t * 3, 0, 0),
-            Slot::Chest => (1 + t / 3, 58 + t * 8, 8 + t),
-            Slot::Ring => (8 + t, 26 + t * 4, 1 + t / 2),
-            Slot::Trinket => (6 + t, 34 + t * 5, 3 + t / 2),
-            _ => (0, 0, 0),
-        }
-    }
+    // Shares `realm_slot_stats` with the realm ladders, same as
+    // `build_archipelago_finds`: at the same t, a Thornveil find is exactly as
+    // strong as a Kaelmyr drop. A hand-mirrored copy of that table lived here
+    // and had already drifted on the ring line (26 + t * 4 / 1 + t / 2 against
+    // the real 30 + t * 4 / 2 + t / 2), which is the second time that copy has
+    // gone stale; pinned exactly now by
+    // `thornveil_finds_ride_the_shared_realm_slot_curve`.
     (0..THORNVEIL_ZONE_WORDS.len())
         .flat_map(|zone| {
             // z=0..11 -> t=41..52: starts exactly at Kaelmyr's own item-power
@@ -2464,7 +2457,7 @@ fn build_thornveil_finds() -> Vec<Item> {
                 Rarity::Legendary,
                 (220 + t * 85) as i64,
                 "A find from Thornveil Falls, water-cut and root-bound, and every bit as fell as anything Kaelmyr offers.",
-                stats,
+                realm_slot_stats,
             )
         })
         .collect()
@@ -2504,10 +2497,7 @@ pub fn broceliande_find_ids(zone: usize) -> [u32; 2] {
 /// The two regional-find ids for a Thornveil Falls zone's notable.
 pub fn thornveil_find_ids(zone: usize) -> [u32; 2] {
     let z = zone.min(THORNVEIL_ZONE_WORDS.len() - 1) as u32;
-    [
-        THORNVEIL_FIND_BASE + z * 2,
-        THORNVEIL_FIND_BASE + z * 2 + 1,
-    ]
+    [THORNVEIL_FIND_BASE + z * 2, THORNVEIL_FIND_BASE + z * 2 + 1]
 }
 
 /// The two regional-find ids for an Archipelago island's boss.

@@ -211,6 +211,18 @@ fn world_has_expected_size_and_every_mob_homes_to_a_real_room() {
         (900..=3 * WILDBOUND_BIOME_STRIDE as usize).contains(&wildbound),
         "the Wildbound Waste should be ~1000+ rooms, got {wildbound}"
     );
+    // Thornveil Falls: twelve braided-maze zones behind Broceliande's deepest
+    // chamber (rooms 34000+). Maze-only, so every zone fills its cell field
+    // and the count is exact rather than a band.
+    let thornveil = count_in(
+        THORNVEIL_BASE,
+        THORNVEIL_BASE + THORNVEIL_ZONES as RoomId * THORNVEIL_ZONE_STRIDE,
+    );
+    assert_eq!(
+        thornveil,
+        THORNVEIL_ZONES * THORNVEIL_W * THORNVEIL_H,
+        "Thornveil Falls should fill all twelve maze zones"
+    );
     // Wayfarer's Hollow: the five-room new-player tutorial zone (rooms
     // 40000+), hung off the Gilded Flagon. A fixed, fully hand-authored set,
     // so this is an exact count rather than a band.
@@ -233,6 +245,7 @@ fn world_has_expected_size_and_every_mob_homes_to_a_real_room() {
             + villages
             + islands
             + wildbound
+            + thornveil
             + tutorial,
         "every room should belong to a known region"
     );
@@ -617,7 +630,10 @@ fn thornveil_falls_is_a_braided_maze_not_a_grid() {
         .filter(|r| is_thornveil_room(r.id))
         .collect();
     // A real, sizeable continent (~1150 rooms).
-    assert!(falls.len() >= 900, "Thornveil Falls is a sizeable continent");
+    assert!(
+        falls.len() >= 900,
+        "Thornveil Falls is a sizeable continent"
+    );
     // A uniform grid has no dead-ends; braided mazes have many. Dead-ends +
     // varied branching prove the shape.
     let dead_ends = falls.iter().filter(|r| r.exits.len() == 1).count();
@@ -625,8 +641,7 @@ fn thornveil_falls_is_a_braided_maze_not_a_grid() {
         dead_ends >= 15,
         "Thornveil Falls should wind into dead-ends, not be square blocks (got {dead_ends})"
     );
-    let degrees: std::collections::HashSet<usize> =
-        falls.iter().map(|r| r.exits.len()).collect();
+    let degrees: std::collections::HashSet<usize> = falls.iter().map(|r| r.exits.len()).collect();
     assert!(
         degrees.len() >= 3,
         "Thornveil Falls rooms should vary in how many ways they branch (got {degrees:?})"
@@ -634,7 +649,7 @@ fn thornveil_falls_is_a_braided_maze_not_a_grid() {
 }
 
 #[test]
-fn thornveil_falls_is_reachable_gated_and_rides_kaelmyrs_endgame_band() {
+fn thornveil_falls_is_reachable_gated_and_sits_below_kaelmyr() {
     let world = seed_world();
     // Reachable by a normal walk from the start (hung off Broceliande's own
     // deepest chamber).
@@ -700,7 +715,11 @@ fn thornveil_falls_is_reachable_gated_and_rides_kaelmyrs_endgame_band() {
     );
     // Every zone has exactly one notable, and its loot all resolves.
     let bosses = spawns.iter().filter(|s| s.boss).count();
-    assert_eq!(bosses, THORNVEIL_ZONES_DATA.len(), "one boss per Thornveil zone");
+    assert_eq!(
+        bosses,
+        THORNVEIL_ZONES_DATA.len(),
+        "one boss per Thornveil zone"
+    );
     for s in &spawns {
         for id in s.loot {
             assert!(
@@ -710,23 +729,59 @@ fn thornveil_falls_is_reachable_gated_and_rides_kaelmyrs_endgame_band() {
             );
         }
     }
-    // Rides the same endgame band as Kaelmyr: a Thornveil boss should out-hit
-    // a Kaelmyr regular mob and, being a genuine alternative rather than a
-    // strictly weaker one, land in the same order of magnitude as Kaelmyr's
-    // own bosses rather than trailing far behind them.
-    let kaelmyr_bosses: Vec<&MobSpawn> = world
-        .spawns
-        .iter()
-        .filter(|s| s.id >= KAELMYR_SPAWN_ID_START && s.id < ARCH_SPAWN_ID_START && s.boss)
-        .collect();
-    assert!(!kaelmyr_bosses.is_empty(), "Kaelmyr has bosses to compare against");
-    let min_kaelmyr_boss_hp = kaelmyr_bosses.iter().map(|s| s.max_hp).min().unwrap();
-    let thornveil_bosses: Vec<&&MobSpawn> = spawns.iter().filter(|s| s.boss).collect();
-    assert!(
-        thornveil_bosses
+    // Where Thornveil actually sits, in the levels a player reads off a mob.
+    //
+    // The intent is a second late-game road beside Kaelmyr, but that is not
+    // what the numbers do: Thornveil's deepest notable is weaker than
+    // Kaelmyr's shallowest, so it reads as Reaches-tier side country. Pinned
+    // exactly rather than loosely, because the loose form of this assertion
+    // ("some Thornveil boss has half the hp of Kaelmyr's weakest") passed for
+    // every boss in the land and so guarded nothing. Raising Thornveil is an
+    // open decision; when it moves, this test must be re-blessed deliberately
+    // and CONTEXT.md §9's measured ladder updated with it.
+    let band = |of: &dyn Fn(&MobSpawn) -> bool, boss: bool| -> (i32, i32) {
+        let levels: Vec<i32> = world
+            .spawns
             .iter()
-            .any(|s| s.max_hp * 2 >= min_kaelmyr_boss_hp),
-        "Thornveil's toughest bosses should be a real alternative to Kaelmyr's, not far weaker"
+            .filter(|s| s.boss == boss && of(s))
+            .map(MobSpawn::level)
+            .collect();
+        assert!(!levels.is_empty(), "the band has mobs to measure");
+        (
+            *levels.iter().min().expect("a floor"),
+            *levels.iter().max().expect("a ceiling"),
+        )
+    };
+    let is_thornveil = |s: &MobSpawn| s.id >= THORNVEIL_SPAWN_ID_START && is_thornveil_room(s.home);
+    let is_kaelmyr = |s: &MobSpawn| s.id >= KAELMYR_SPAWN_ID_START && s.id < ARCH_SPAWN_ID_START;
+
+    let thornveil_trash = band(&is_thornveil, false);
+    let thornveil_boss = band(&is_thornveil, true);
+    let kaelmyr_trash = band(&is_kaelmyr, false);
+    let kaelmyr_boss = band(&is_kaelmyr, true);
+
+    assert_eq!(
+        (thornveil_trash, thornveil_boss),
+        ((58, 69), (64, 68)),
+        "Thornveil's measured level band moved; re-bless it against CONTEXT.md §9"
+    );
+    assert_eq!(
+        (kaelmyr_trash, kaelmyr_boss),
+        ((63, 78), (69, 80)),
+        "Kaelmyr's measured level band moved; re-bless it against CONTEXT.md §9"
+    );
+    // The ordering those two bands encode, stated as the property rather than
+    // left implicit in the numbers above.
+    assert!(
+        thornveil_boss.1 < kaelmyr_boss.0,
+        "Thornveil's deepest notable ({}) still reads below Kaelmyr's shallowest ({})",
+        thornveil_boss.1,
+        kaelmyr_boss.0
+    );
+    // Whatever band it lands in, the land has to climb within itself.
+    assert!(
+        thornveil_trash.0 < thornveil_trash.1 && thornveil_boss.0 < thornveil_boss.1,
+        "Thornveil should climb across its own twelve zones"
     );
 }
 
@@ -2395,7 +2450,7 @@ fn zone_level_bands_are_sane_and_cover_the_road() {
 
 /// Every themed region: name, theme table, base room id, and rooms per zone.
 /// A spawn's home maps back to its zone by `(home - base) / stride`.
-fn themed_regions() -> [(&'static str, &'static [ZoneTheme], u32, u32); 7] {
+fn themed_regions() -> [(&'static str, &'static [ZoneTheme], u32, u32); 8] {
     use super::super::archipelago;
     [
         (
@@ -2439,6 +2494,12 @@ fn themed_regions() -> [(&'static str, &'static [ZoneTheme], u32, u32); 7] {
             &archipelago::ISLAND_THEMES,
             archipelago::ARCH_BASE,
             archipelago::ARCH_STRIDE,
+        ),
+        (
+            "Thornveil",
+            &THORNVEIL_ZONE_THEMES,
+            THORNVEIL_BASE,
+            THORNVEIL_ZONE_STRIDE,
         ),
     ]
 }
@@ -2788,4 +2849,64 @@ fn the_world_pass_redistributes_grind_rates_but_never_rebalances_a_class() {
         max - min <= 0.12,
         "routed spread {max:.3} - {min:.3} is past 12 points"
     );
+}
+
+#[test]
+#[ignore = "prints every region with its measured level band, loot source and role; the map of the whole game"]
+fn region_atlas_yardstick() {
+    let world = seed_world();
+    println!(
+        "\n{:<34} {:>6} {:>9} {:>9} {:>6} {:>6}  {:<13} {}",
+        "region", "rooms", "trash lvl", "boss lvl", "bosses", "crowns", "kind", "reached by"
+    );
+    for &(name, lo, hi, kind, gateway) in REGIONS {
+        let rooms = world
+            .rooms
+            .keys()
+            .filter(|id| (lo..hi).contains(id))
+            .count();
+        if rooms == 0 {
+            continue;
+        }
+        let here: Vec<&MobSpawn> = world
+            .spawns
+            .iter()
+            .filter(|s| (lo..hi).contains(&s.home))
+            .collect();
+        let band = |boss: bool| -> String {
+            let lv: Vec<i32> = here
+                .iter()
+                .filter(|s| s.boss == boss)
+                .map(|s| s.level())
+                .collect();
+            match (lv.iter().min(), lv.iter().max()) {
+                (Some(a), Some(b)) => format!("{a}-{b}"),
+                _ => "-".to_string(),
+            }
+        };
+        let bosses = here.iter().filter(|s| s.boss).count();
+        let crowns = here
+            .iter()
+            .filter(|s| s.boss && CROWNS.iter().any(|c| c.name == s.name))
+            .count();
+        println!(
+            "{name:<34} {rooms:>6} {:>9} {:>9} {bosses:>6} {crowns:>6}  {kind:<13} {gateway}",
+            band(false),
+            band(true),
+        );
+    }
+    println!("\ncrowns, in ladder order (the road):");
+    for c in CROWNS {
+        let where_ = world
+            .spawns
+            .iter()
+            .find(|s| s.name == c.name)
+            .and_then(|s| region_atlas_entry(s.home))
+            .map(|(r, _)| r)
+            .unwrap_or("?");
+        println!(
+            "  L{:<3} {:<46} {:>6} hp {:>4} dmg   {where_}",
+            c.level, c.name, c.max_hp, c.damage
+        );
+    }
 }
